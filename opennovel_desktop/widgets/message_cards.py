@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -21,6 +23,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+# 过滤 LLM 流式输出中的工具调用协议块（回退通道 <tool_call> 泄漏防护）
+_TOOL_CALL_STRIP_RE = re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL)
 
 # ── 发送者颜色映射 ──────────────────────────────────────────
 SENDER_COLORS: dict[str, str] = {
@@ -297,8 +302,12 @@ class ThinkingCard(MessageCard):
     # ── Streaming API ───────────────────────────────────────
 
     def append_text(self, chunk: str) -> None:
-        """追加流式文本。"""
+        """追加流式文本（自动过滤工具调用块）。"""
         if self._finalized:
+            return
+        # 过滤 <tool_call> 协议块泄漏
+        chunk = _TOOL_CALL_STRIP_RE.sub("", chunk)
+        if not chunk:
             return
         cursor = self._body_text.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)

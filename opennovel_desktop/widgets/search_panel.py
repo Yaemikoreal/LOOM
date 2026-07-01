@@ -103,15 +103,6 @@ class SearchPanel(QWidget):
             return
         self._clear_results()
 
-        # 收集筛选
-        sources = []
-        if self._filter_canon.isChecked():
-            sources.append("canon")
-        if self._filter_draft.isChecked():
-            sources.append("draft")
-        if self._filter_sub.isChecked():
-            sources.append("subconscious")
-
         is_exact = self._mode_btn.isChecked()
 
         # 调用 SearchPipeline
@@ -124,8 +115,8 @@ class SearchPanel(QWidget):
                 pipeline = SearchPipeline(Path(state.current_project))
                 results = pipeline.search(
                     query,
-                    sources=sources or None,
                     use_reranker=not is_exact,
+                    top_k=15,
                 )
                 self._display_results(results)
             else:
@@ -135,24 +126,42 @@ class SearchPanel(QWidget):
         except Exception as e:
             self._add_result_item("搜索出错", 0, str(e))
 
-    def _display_results(self, results: list) -> None:
+    def _display_results(self, result: object) -> None:
         """展示搜索结果。"""
-        if not results:
+        try:
+            chunks = result.chunks if hasattr(result, "chunks") else []
+        except Exception:
+            chunks = []
+
+        if not chunks:
             self._add_result_item("无结果", 0, "未找到匹配内容")
             return
 
-        for r in results:
-            title = r.get("title", "") or r.get("chunk_id", "")
-            source = r.get("source", "")
-            score = r.get("score", 0) or r.get("relevance", 0)
-            snippet = r.get("text", "") or r.get("content", "")
-            line_no = r.get("line_no", 0) or 0
+        # 收集源过滤条件（后过滤）
+        selected_sources = set()
+        if self._filter_canon.isChecked():
+            selected_sources.add("canon")
+        if self._filter_draft.isChecked():
+            selected_sources.add("draft")
+        if self._filter_sub.isChecked():
+            selected_sources.add("subconscious")
+
+        for rc in chunks:
+            chunk = rc.chunk if hasattr(rc, "chunk") else rc
+            source_raw = chunk.source.value if hasattr(chunk.source, "value") else str(chunk.source)
+
+            # 源后过滤
+            if selected_sources and source_raw not in selected_sources:
+                continue
+
+            title = chunk.chunk_id if hasattr(chunk, "chunk_id") else ""
+            score = getattr(rc, "reranker_score", 0) or getattr(rc, "rrf_score", 0)
+            snippet = chunk.text if hasattr(chunk, "text") else ""
 
             self._add_result_item(
                 title,
                 score,
-                f"[{source}] {snippet[:100]}…",
-                line_no=line_no,
+                f"[{source_raw}] {snippet[:100]}…",
             )
 
     def _add_result_item(

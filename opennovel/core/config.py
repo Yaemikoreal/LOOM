@@ -66,6 +66,10 @@ class _NovelConfigSchema(BaseModel):
     reranker_device: str | None = None
     search_top_k: int | None = Field(default=None, ge=1, le=100)
 
+    # Agent 自治配置 (Phase 3)
+    supports_native_tool_use: bool | None = None
+    max_tool_call_history: int | None = Field(default=None, ge=1, le=50)
+
 
 class ConfigValidationError(Exception):
     """配置校验失败时抛出的异常，携带精确的错误详情。
@@ -170,6 +174,10 @@ class LoomConfig:
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_device: str = ""  # 空字符串 = 自动检测 (cuda > mps > cpu)
     search_top_k: int = 5  # 最终返回结果数
+
+    # Agent 自治配置 (Phase 3)
+    supports_native_tool_use: bool = False
+    max_tool_call_history: int = 5
 
     extra: dict = field(default_factory=dict)
 
@@ -280,6 +288,8 @@ class LoomConfig:
             "reranker_model",
             "reranker_device",
             "search_top_k",
+            "supports_native_tool_use",
+            "max_tool_call_history",
         }
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
@@ -309,6 +319,8 @@ class LoomConfig:
             reranker_model=str(data.get("reranker_model", "BAAI/bge-reranker-v2-m3")),
             reranker_device=str(data.get("reranker_device", "")),
             search_top_k=int(data.get("search_top_k", 5)),
+            supports_native_tool_use=bool(data.get("supports_native_tool_use", False)),
+            max_tool_call_history=int(data.get("max_tool_call_history", 5)),
             extra=extra,
         )
 
@@ -347,6 +359,11 @@ class LoomConfig:
         if self.reranker_device:
             data["reranker_device"] = self.reranker_device
         data["search_top_k"] = self.search_top_k
+
+        # Agent 自治配置 (Phase 3)
+        data["supports_native_tool_use"] = self.supports_native_tool_use
+        if self.max_tool_call_history != 5:
+            data["max_tool_call_history"] = self.max_tool_call_history
 
         # per-agent 配置
         agents: dict = {}

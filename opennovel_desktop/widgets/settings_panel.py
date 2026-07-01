@@ -9,6 +9,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -103,6 +104,63 @@ class SettingsPanel(QWidget):
         self._direction_edit.setMaximumHeight(80)
         form_layout.addWidget(self._direction_edit)
 
+        # ── Phase 3 新增配置 ──
+
+        # Director 开关
+        self._director_check = QCheckBox(
+            "启用 Director Agent（全局叙事分析）"
+        )
+        self._director_check.setChecked(True)
+        form_layout.addWidget(self._director_check)
+
+        # Reranker 配置
+        reranker_group = QFrame()
+        reranker_group.setFrameShape(QFrame.Shape.StyledPanel)
+        rg_layout = QVBoxLayout(reranker_group)
+        rg_layout.setContentsMargins(8, 8, 8, 8)
+        rg_layout.setSpacing(6)
+
+        self._reranker_check = QCheckBox("启用 Cross-Encoder 重排序")
+        self._reranker_check.setChecked(True)
+        rg_layout.addWidget(self._reranker_check)
+
+        rg_layout.addWidget(QLabel("Reranker 模型"))
+        self._reranker_model = QComboBox()
+        self._reranker_model.setEditable(True)
+        self._reranker_model.addItems([
+            "BAAI/bge-reranker-v2-m3",
+            "BAAI/bge-reranker-v2-m3-20240828",
+        ])
+        rg_layout.addWidget(self._reranker_model)
+
+        rg_layout.addWidget(QLabel("Top-K 返回数"))
+        self._top_k_spin = QSpinBox()
+        self._top_k_spin.setRange(1, 50)
+        self._top_k_spin.setValue(5)
+        rg_layout.addWidget(self._top_k_spin)
+
+        form_layout.addWidget(reranker_group)
+
+        # Agent 自治配置
+        autonomy_group = QFrame()
+        autonomy_group.setFrameShape(QFrame.Shape.StyledPanel)
+        ag_layout = QVBoxLayout(autonomy_group)
+        ag_layout.setContentsMargins(8, 8, 8, 8)
+        ag_layout.setSpacing(6)
+
+        self._native_tool_check = QCheckBox(
+            "启用原生 Tool-Use（仅闭源模型如 DeepSeek/Claude）"
+        )
+        ag_layout.addWidget(self._native_tool_check)
+
+        ag_layout.addWidget(QLabel("工具调用历史保留数"))
+        self._tool_history_spin = QSpinBox()
+        self._tool_history_spin.setRange(1, 20)
+        self._tool_history_spin.setValue(5)
+        ag_layout.addWidget(self._tool_history_spin)
+
+        form_layout.addWidget(autonomy_group)
+
         form_layout.addStretch()
         scroll.setWidget(form)
         layout.addWidget(scroll, 1)
@@ -141,6 +199,12 @@ class SettingsPanel(QWidget):
             self._temp_slider.setValue(int(config.extra.get("temperature", 0.7) * 100))
             self._token_spin.setValue(config.token_budget)
             self._direction_edit.setPlainText(config.creative_direction)
+            self._director_check.setChecked(config.director_enabled)
+            self._reranker_check.setChecked(config.reranker_enabled)
+            self._reranker_model.setCurrentText(config.reranker_model)
+            self._top_k_spin.setValue(config.search_top_k)
+            self._native_tool_check.setChecked(config.supports_native_tool_use)
+            self._tool_history_spin.setValue(config.max_tool_call_history)
         except (OSError, ValueError, ImportError):
             pass
 
@@ -158,6 +222,12 @@ class SettingsPanel(QWidget):
             if "temperature" not in config.extra:
                 config.extra["temperature"] = 0.7
             config.extra["temperature"] = self._temp_slider.value() / 100
+            config.director_enabled = self._director_check.isChecked()
+            config.reranker_enabled = self._reranker_check.isChecked()
+            config.reranker_model = self._reranker_model.currentText()
+            config.search_top_k = self._top_k_spin.value()
+            config.supports_native_tool_use = self._native_tool_check.isChecked()
+            config.max_tool_call_history = self._tool_history_spin.value()
             config.save(Path(self._project_root))
 
             from opennovel_desktop.widgets.toast_notification import (
