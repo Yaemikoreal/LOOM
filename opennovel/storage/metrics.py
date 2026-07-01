@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from opennovel.schemas.metrics import AgentTrace, EvaluationHistory, TokenUsage
+from opennovel.schemas.metrics import AgentTrace, EvaluationHistory, StateCacheEntry, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -308,3 +308,69 @@ class MetricsStore:
         finally:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             self.record_trace(agent, action, chapter_id, elapsed_ms, status, detail)
+
+    # ── State Cache (Phase 3) ──────────────────────────────────────────
+
+    def set_state_cache(self, entry: StateCacheEntry) -> StateCacheEntry:
+        """写入或更新状态缓存（upsert by character_id）。
+
+        Args:
+            entry: 状态缓存条目
+
+        Returns:
+            写入后的缓存条目
+        """
+        with Session(self._engine) as session:
+            statement = select(StateCacheEntry).where(
+                StateCacheEntry.character_id == entry.character_id,
+            )
+            existing = session.exec(statement).first()
+            if existing:
+                existing.chapter_id = entry.chapter_id
+                existing.state_json = entry.state_json
+                existing.digest_text = entry.digest_text
+                existing.updated_at = datetime.now().isoformat()
+                session.add(existing)
+                session.commit()
+                session.refresh(existing)
+                return existing
+            session.add(entry)
+            session.commit()
+            session.refresh(entry)
+            return entry
+
+    def get_state_cache(self, character_id: str) -> StateCacheEntry | None:
+        """获取指定角色的状态缓存。
+
+        Args:
+            character_id: 角色 Canonical ID
+
+        Returns:
+            缓存条目，不存在返回 None
+        """
+        with Session(self._engine) as session:
+            statement = select(StateCacheEntry).where(
+                StateCacheEntry.character_id == character_id,
+            )
+            return session.exec(statement).first()
+
+    def get_all_state_caches(self) -> list[StateCacheEntry]:
+        """获取所有角色的状态缓存。"""
+        with Session(self._engine) as session:
+            statement = select(StateCacheEntry)
+            return list(session.exec(statement).all())
+
+    def invalidate_state_cache(self, character_id: str) -> None:
+        """使指定角色的状态缓存失效。
+
+        Args:
+            character_id: 角色 Canonical ID
+        """
+        with Session(self._engine) as session:
+            statement = select(StateCacheEntry).where(
+                StateCacheEntry.character_id == character_id,
+            )
+            existing = session.exec(statement).first()
+            if existing:
+                session.delete(existing)
+                session.commit()

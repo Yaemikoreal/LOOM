@@ -256,6 +256,34 @@ class EventStore:
             )
             return list(session.exec(statement).all())
 
+    def get_events_between(
+        self,
+        character_id: str,
+        from_chapter: str,
+        to_chapter: str,
+    ) -> list[EventLog]:
+        """查询角色在两个章节之间的事件（增量投影用）。
+
+        Args:
+            character_id: 角色 Canonical ID
+            from_chapter: 起始章节（不包含，即 > from_chapter）
+            to_chapter: 截止章节（包含，即 <= to_chapter）
+
+        Returns:
+            事件列表，按 chapter_id 升序
+        """
+        with Session(self._engine) as session:
+            statement = (
+                select(EventLog)
+                .where(
+                    EventLog.character_id == character_id,
+                    EventLog.chapter_id > from_chapter,
+                    EventLog.chapter_id <= to_chapter,
+                )
+                .order_by(EventLog.chapter_id.asc())
+            )
+            return list(session.exec(statement).all())
+
     # ── 因果链 DAG 查询 (Phase 2.1) ──────────────────────────────────
 
     def get_causal_chain(

@@ -8,15 +8,22 @@ State Projector 从 EventLog 事件流归约为角色在任意时间点的可信
 2. 依次应用每个事件变更到空白状态字典
 3. 输出该时间点的最终状态快照
 
+Phase 3 新增：增量折叠 + MetricsStore 缓存（State Digest）。
+参见 CONTEXT.md 的 State Digest 条目。
+
 设计原则：
 - 纯函数式：输入事件列表 → 输出状态快照，无副作用
-- <30ms 预期延迟（2500 事件规模）
+- 增量模式：从上次缓存的 checkpoint 开始折叠，避免全量重算
+- 缓存通过 MetricsStore.state_cache 表持久化
 - 不依赖 LLM
 """
 
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
+from opennovel.schemas.metrics import StateCacheEntry
 from opennovel.schemas.state import CharacterStateSnapshot
 from opennovel.storage.sqlite import EventStore
 
@@ -29,16 +36,25 @@ class StateProjector:
     使用方式:
         projector = StateProjector(event_store)
         snapshot = projector.project("char_001", "ch_050")
-        print(snapshot.physical)  # {"左臂": "骨折"}
+
+    带缓存模式:
+        projector = StateProjector(event_store, metrics_store)
+        snapshot = projector.project_and_cache("char_001", "ch_050")
     """
 
-    def __init__(self, event_store: EventStore) -> None:
+    def __init__(
+        self,
+        event_store: EventStore,
+        metrics_store: Any | None = None,
+    ) -> None:
         """初始化状态投影器。
 
         Args:
             event_store: EventStore 实例，用于查询事件
+            metrics_store: MetricsStore 实例（可选），用于缓存状态快照
         """
         self._event_store = event_store
+        self._metrics_store = metrics_store
 
     def project(
         self,
@@ -180,3 +196,81 @@ class StateProjector:
             if formatted:
                 lines.append(formatted)
         return "\n".join(lines)
+
+    # ── 增量缓存模式 (Phase 3) ──────────────────────────────────────────
+
+    def project_with_cache(
+        self,
+        character_id: str,
+        up_to_chapter: str,
+    ) -> CharacterStateSnapshot:
+        """带缓存的增量折叠。
+
+        优先从 MetricsStore 缓存读取，缓存命中时跳过全量计算。
+        缓存部分命中时从 checkpoint 增量折叠，避免全量重算。
+
+        Args:
+            character_id: 角色 Canonical ID
+            up_to_chapter: 截止章节 ID
+
+        Returns:
+            状态快照
+        """
+        if self._metrics_store is None:
+            return self.project(character_id, up_to_chapter)
+
+        cached = self._metrics_store.get_state_cache(character_id)
+
+        if cached and cached.chapter_id == up_to_chapter:
+            # 完全命中：直接返回缓存的快照
+            return CharacterStateSnapshot.model_validate_json(cached.state_json)
+
+        if cached and cached.chapter_id < up_to_chapter:
+            # 部分命中：从缓存 checkpoint 之后增量折叠
+            base_state = CharacterStateSnapshot.model_validate_json(cached.state_json)
+            new_events = self._event_store.get_events_between(
+                character_id, cached.chapter_id, up_to_chapter,
+            )
+            if new_events:
+                for evt in new_events:
+                    self._apply_event(base_state, evt)
+            base_state.chapter_id = up_to_chapter
+            base_state.event_count = cached.state_json.count("event_count") + len(new_events)
+            return base_state
+
+        # 缓存未命中：全量折叠
+        return self.project(character_id, up_to_chapter)
+
+    def project_and_cache(
+        self,
+        character_id: str,
+        up_to_chapter: str,
+    ) -> CharacterStateSnapshot:
+        """折叠状态并写入缓存。
+
+        先通过 project_with_cache() 获取快照（利用已有缓存），
+        再将结果写入 MetricsStore.state_cache 表。
+
+        Args:
+            character_id: 角色 Canonical ID
+            up_to_chapter: 截止章节 ID
+
+        Returns:
+            状态快照
+        """
+        snapshot = self.project_with_cache(character_id, up_to_chapter)
+
+        if self._metrics_store:
+            try:
+                digest = self.format_for_context(snapshot)
+                entry = StateCacheEntry(
+                    character_id=character_id,
+                    chapter_id=up_to_chapter,
+                    state_json=snapshot.model_dump_json(),
+                    digest_text=digest,
+                )
+                self._metrics_store.set_state_cache(entry)
+            except Exception as e:
+                logger.warning("State Projector 缓存写入失败（非关键路径）: %s", e)
+
+        return snapshot

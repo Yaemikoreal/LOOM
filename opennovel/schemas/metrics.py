@@ -79,3 +79,25 @@ class AgentTrace(SQLModel, table=True):
     duration_ms: int = SQLField(default=0, description="执行耗时（毫秒）")
     status: str = SQLField(default="success", description="执行状态: success/error")
     detail: str = SQLField(default="", description="补充信息（如错误消息）")
+
+
+class StateCacheEntry(SQLModel, table=True):
+    """State Projector 缓存条目 — EventLog 折叠后的角色状态快照。
+
+    与 EventStore（叙事真相）独立，仅为运行时性能优化缓存。
+    可通过 invalidate 后重新折叠恢复。
+
+    详见 CONTEXT.md 的 State Digest 条目。
+    """
+
+    __tablename__ = "state_cache"
+
+    id: int | None = SQLField(default=None, primary_key=True)
+    character_id: str = SQLField(index=True, description="角色 Canonical ID")
+    chapter_id: str = SQLField(description="最新缓存的章节 ID")
+    state_json: str = SQLField(description="CharacterStateSnapshot 的 JSON 序列化")
+    digest_text: str = SQLField(default="", description="渲染后的自然语言摘要文本")
+    updated_at: str = SQLField(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="最后更新时间",
+    )
