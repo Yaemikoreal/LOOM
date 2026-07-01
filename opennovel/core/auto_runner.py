@@ -852,8 +852,11 @@ class AutoRunner:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                     future_critic = executor.submit(self.critic.evaluate, chapter_id, chapter_text, outline)
                     future_analysis = executor.submit(self._analyze_chapter_text, chapter_text)
-                    evaluation = future_critic.result()
+                    with self.metrics.trace("critic", "evaluate", chapter_id):
+                        evaluation = future_critic.result()
                     chapter_analysis = future_analysis.result()
+                    if chapter_analysis and "word_count_est" in chapter_analysis:
+                        word_count = chapter_analysis["word_count_est"]
             else:
                 console.print(f"[bold]📊 Critic 评分[/bold] (第 {attempt + 1} 次)")
                 with self.metrics.trace("critic", "evaluate", chapter_id):

@@ -109,7 +109,12 @@ class ToolRegistry:
         # 带重试的执行
         return self._execute_with_retry(need, handler)
 
-    def fulfill(self, needs: list[KnowledgeNeed]) -> list[KnowledgeResult]:
+    def fulfill(
+        self,
+        needs: list[KnowledgeNeed],
+        safety_fence: Any | None = None,
+        agent: str = "",
+    ) -> list[KnowledgeResult]:
         """批量满足知识需求（保留旧接口兼容，内部调用 execute）。
 
         对每个 KnowledgeNeed 调用对应的工具，
@@ -117,6 +122,8 @@ class ToolRegistry:
 
         Args:
             needs: 知识需求列表
+            safety_fence: 安全围栏实例（用于权限检查，Phase 3 治理）
+            agent: 发起调用的 Agent 名称
 
         Returns:
             查询结果列表（仅包含成功的查询）
@@ -124,7 +131,7 @@ class ToolRegistry:
         results: list[KnowledgeResult] = []
         for need in needs:
             try:
-                result = self.execute(need)
+                result = self.execute(need, safety_fence=safety_fence, agent=agent)
                 results.append(result)
             except Exception as e:
                 logger.warning(

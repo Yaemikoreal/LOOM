@@ -597,7 +597,7 @@ def _assemble_standard(
     if chars_to_load and _proj_chapter:
         try:
             snapshots: list[Any] = []
-            proj_text_cache: str | None = None
+            digest_parts: list[str] = []
 
             # Phase 3: 优先从 MetricsStore.state_cache 读取
             if metrics_store is not None:
@@ -608,8 +608,8 @@ def _assemble_standard(
                         snap = CharacterStateSnapshot.model_validate_json(cached.state_json)
                         if snap.event_count > 0:
                             snapshots.append(snap)
-                            if proj_text_cache is None and cached.digest_text:
-                                proj_text_cache = cached.digest_text
+                            if cached.digest_text:
+                                digest_parts.append(cached.digest_text)
 
             # 缓存未命中或无指标库时，回退到实时 EventStore 投影
             if not snapshots:
@@ -622,11 +622,11 @@ def _assemble_standard(
                         if snap.event_count > 0:
                             snapshots.append(snap)
                     if snapshots:
-                        proj_text_cache = projector.format_snapshots(snapshots)
+                        digest_parts.append(projector.format_snapshots(snapshots))
 
             # 注入到上下文
-            if proj_text_cache:
-                proj_text = wrap_with_authority_tag(proj_text_cache, AuthorityLevel.STATE_MEMORY)
+            if digest_parts:
+                proj_text = wrap_with_authority_tag("\n".join(digest_parts), AuthorityLevel.STATE_MEMORY)
                 proj_tokens = counter.count(proj_text)
                 remaining = state_budget - state_used
                 if remaining > 0 and proj_tokens <= remaining:

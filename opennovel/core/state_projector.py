@@ -235,7 +235,7 @@ class StateProjector:
                 for evt in new_events:
                     self._apply_event(base_state, evt)
             base_state.chapter_id = up_to_chapter
-            base_state.event_count = cached.state_json.count("event_count") + len(new_events)
+            base_state.event_count = base_state.event_count + len(new_events)
             return base_state
 
         # 缓存未命中：全量折叠

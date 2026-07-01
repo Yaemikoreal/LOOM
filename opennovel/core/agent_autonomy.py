@@ -269,26 +269,6 @@ class ToolCallParser:
         ).strip()
 
     @staticmethod
-    def format_native_result(
-        request: ToolCallRequest,
-        content: str,
-        source_label: str = "unknown",
-    ) -> str:
-        """格式化原生工具调用结果为 tool_result 消息。
-
-        原生通道的结果嵌入为 tool_result 角色消息（非文本格式）。
-
-        Args:
-            request: 原始工具调用请求
-            content: 查询返回的内容
-            source_label: 来源标签
-
-        Returns:
-            工具结果字符串
-        """
-        return content[:2000] if content else "无相关结果"
-
-    @staticmethod
     def get_autonomy_prompt_suffix(native: bool = False) -> str:
         """获取 Writer 的自治 Prompt 后缀。
 
