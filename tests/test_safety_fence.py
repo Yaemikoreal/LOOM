@@ -405,3 +405,46 @@ class TestAutoRunnerSafetyIntegration:
         runner = AutoRunner(project_root=root, config=config)
         runner.safety_fence.record_tokens(100)
         assert runner._check_safety("writer", additional_tokens=1) is False
+
+
+class TestToolPermission:
+    """工具调用权限表测试。"""
+
+    def test_no_permission_config_allows_all(self) -> None:
+        """测试无权限配置时允许所有调用。"""
+        fence = SafetyFence()
+        assert fence.check_tool_permission("writer", "query_canon") is True
+        assert fence.check_tool_permission("writer", "query_event") is True
+
+    def test_disallowed_tool_blocked(self) -> None:
+        """测试禁止列表中的工具被拒绝。"""
+        config = SafetyFenceConfig(
+            tool_permissions={
+                "writer": {"allowed": [], "disallowed": ["query_event"]},
+            },
+        )
+        fence = SafetyFence(config)
+        assert fence.check_tool_permission("writer", "query_canon") is True
+        assert fence.check_tool_permission("writer", "query_event") is False
+
+    def test_allowed_list_restricts(self) -> None:
+        """测试白名单之外的被拒绝。"""
+        config = SafetyFenceConfig(
+            tool_permissions={
+                "writer": {"allowed": ["query_canon"], "disallowed": []},
+            },
+        )
+        fence = SafetyFence(config)
+        assert fence.check_tool_permission("writer", "query_canon") is True
+        assert fence.check_tool_permission("writer", "query_character") is False
+
+    def test_disabled_fence_skips_check(self) -> None:
+        """测试禁用安全围栏时跳过权限检查。"""
+        config = SafetyFenceConfig(
+            enabled=False,
+            tool_permissions={
+                "writer": {"allowed": [], "disallowed": ["query_event"]},
+            },
+        )
+        fence = SafetyFence(config)
+        assert fence.check_tool_permission("writer", "query_event") is True

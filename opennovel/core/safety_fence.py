@@ -44,6 +44,9 @@ class SafetyFenceConfig:
         forbidden_modifications: 禁止修改的 CANON 元素列表
         canon_dir: Canon 设定目录（启用世界观规则校验时需要）
         enabled: 是否启用安全围栏
+        tool_permissions: 工具调用权限表
+            格式: {"agent_name": {"allowed": [...], "disallowed": [...]}}
+            空列表 = 不限制
     """
 
     max_recursion_depth: int = DEFAULT_MAX_RECURSION_DEPTH
@@ -52,6 +55,7 @@ class SafetyFenceConfig:
     forbidden_modifications: list[str] = field(default_factory=list)
     canon_dir: str | None = None
     enabled: bool = True
+    tool_permissions: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -218,6 +222,55 @@ class SafetyFence:
             self.check_timeout(agent),
         ]
         return all(checks)
+
+    def check_tool_permission(self, agent: str, tool_name: str) -> bool:
+        """检查 Agent 是否有权调用指定工具（权限表查表）。
+
+        Args:
+            agent: Agent 名称（如 "writer", "critic"）
+            tool_name: 工具名称（如 "query_canon", "query_event"）
+
+        Returns:
+            True 表示允许调用，False 表示权限拒绝
+        """
+        if not self.config.enabled:
+            return True
+
+        perms = self.config.tool_permissions.get(agent, {})
+        allowed = perms.get("allowed", [])
+        disallowed = perms.get("disallowed", [])
+
+        # 黑名单优先：如果在禁止列表中，直接拒绝
+        if disallowed and tool_name in disallowed:
+            logger.warning(
+                "安全围栏: Agent %s 无权调用工具 %s（黑名单）",
+                agent, tool_name,
+            )
+            self.violations.append(
+                SafetyViolation(
+                    rule="permission_denied",
+                    agent=agent,
+                    detail=f"Agent '{agent}' 被禁止调用 '{tool_name}'",
+                )
+            )
+            return False
+
+        # 白名单：如果有白名单但工具不在其中，拒绝
+        if allowed and tool_name not in allowed:
+            logger.warning(
+                "安全围栏: Agent %s 无权调用工具 %s（不在白名单）",
+                agent, tool_name,
+            )
+            self.violations.append(
+                SafetyViolation(
+                    rule="permission_denied",
+                    agent=agent,
+                    detail=f"Agent '{agent}' 不在 '{tool_name}' 的白名单中",
+                )
+            )
+            return False
+
+        return True
 
     def check_canon_integrity(
         self,

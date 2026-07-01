@@ -630,14 +630,19 @@ class Writer:
             outline,
             previous_chapter_text,
         )
-        # 注入自治 Prompt 后缀（工具调用协议）
-        task_message += ToolCallParser.get_autonomy_prompt_suffix()
+        # 注入自治 Prompt 后缀（工具调用协议，根据模式选择）
+        is_native = self.autonomy_config.supports_native_tool_use
+        task_message += ToolCallParser.get_autonomy_prompt_suffix(native=is_native)
 
         # 通过 ContextAssembler 组装完整上下文
         messages = self._build_context(task_message)
 
-        # 创建自治执行器
-        executor = ToolCallExecutor(self.tool_registry)
+        # 创建自治执行器（带权限检查和 Agent 名称）
+        executor = ToolCallExecutor(
+            self.tool_registry,
+            safety_fence=self.safety_fence,
+            agent_name="writer",
+        )
         loop = AutonomousWriteLoop(
             llm_bus=self.llm_bus,
             executor=executor,

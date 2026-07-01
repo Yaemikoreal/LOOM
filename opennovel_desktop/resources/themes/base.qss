@@ -1,0 +1,246 @@
+/* ══════════════════════════════════════════════════════════════
+   OpenNovel Desktop — Base QSS
+   与主题无关的布局样式（间距、字体、滚动条、分割器等）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 全局字体 ──────────────────────────────────────────── */
+QWidget {
+    font-family: "Inter", "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 13px;
+}
+
+/* ── MainWindow ────────────────────────────────────────── */
+QMainWindow {
+    background: palette(window);
+}
+
+/* ── QSplitter (分割器) ────────────────────────────────── */
+QSplitter::handle {
+    background: transparent;
+    width: 4px;
+    height: 4px;
+}
+QSplitter::handle:hover {
+    background: palette(highlight);
+}
+
+/* ── QToolBar ──────────────────────────────────────────── */
+QToolBar {
+    border: none;
+    padding: 4px 8px;
+    spacing: 4px;
+    /* movable=False 在 Python 代码中设置 */
+}
+QToolBar::separator {
+    width: 1px;
+    margin: 6px 4px;
+}
+
+/* ── QToolButton (工具栏纯图标按钮) ────────────────────── */
+QToolButton {
+    border: none;
+    border-radius: 4px;
+    padding: 4px;
+    min-width: 32px;
+    min-height: 32px;
+}
+QToolButton:hover {
+    background: palette(midlight);
+}
+QToolButton:pressed {
+    background: palette(dark);
+}
+QToolButton:disabled {
+    opacity: 0.4;
+}
+
+/* ── QMenuBar ──────────────────────────────────────────── */
+QMenuBar {
+    border: none;
+    padding: 2px 8px;
+    font-size: 13px;
+}
+QMenuBar::item {
+    padding: 6px 12px;
+    border-radius: 4px;
+}
+QMenuBar::item:selected {
+    background: palette(midlight);
+}
+
+/* ── QMenu ─────────────────────────────────────────────── */
+QMenu {
+    border: 1px solid palette(mid);
+    border-radius: 6px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 6px 24px 6px 12px;
+    border-radius: 4px;
+}
+QMenu::item:selected {
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
+QMenu::separator {
+    height: 1px;
+    margin: 4px 8px;
+}
+
+/* ── QStatusBar ─────────────────────────────────────────── */
+QStatusBar {
+    border: none;
+    border-top: 1px solid palette(mid);
+    font-size: 12px;
+    padding: 0 8px;
+    min-height: 28px;
+}
+QStatusBar QLabel {
+    padding: 0 8px;
+    border: none;
+}
+
+/* ── QTabWidget / QTabBar (右侧面板标签) ───────────────── */
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid palette(mid);
+    padding: 0;
+}
+QTabBar::tab {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    border: none;
+    border-bottom: 2px solid transparent;
+    min-height: 36px;
+}
+QTabBar::tab:selected {
+    border-bottom: 2px solid palette(highlight);
+}
+QTabBar::tab:hover:!selected {
+    background: palette(midlight);
+}
+
+/* ── QListWidget / QTreeWidget ───────────────────────────── */
+QListWidget, QTreeWidget {
+    border: none;
+    outline: none;
+    font-size: 13px;
+}
+QListWidget::item, QTreeWidget::item {
+    padding: 6px 10px;
+    border-radius: 4px;
+}
+QListWidget::item:selected, QTreeWidget::item:selected {
+    background: palette(highlight);
+}
+QListWidget::item:hover:!selected, QTreeWidget::item:hover:!selected {
+    background: palette(midlight);
+}
+
+/* ── QTextBrowser ────────────────────────────────────────── */
+QTextBrowser {
+    border: none;
+    font-size: 13px;
+}
+
+/* ── QPushButton ─────────────────────────────────────────── */
+QPushButton {
+    border: none;
+    border-radius: 4px;
+    padding: 8px 20px;
+    font-size: 13px;
+    font-weight: 500;
+    min-height: 20px;
+}
+QPushButton:pressed {
+    padding-top: 9px;
+    padding-bottom: 7px;
+}
+QPushButton:disabled {
+    opacity: 0.5;
+}
+
+/* ── QLineEdit / QSpinBox ────────────────────────────────── */
+QLineEdit, QSpinBox {
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+}
+QLineEdit:focus, QSpinBox:focus {
+    border-color: palette(highlight);
+}
+
+/* ── QScrollBar (极窄) ──────────────────────────────────── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    border-radius: 4px;
+    min-height: 40px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 8px;
+    margin: 0;
+}
+QScrollBar::handle:horizontal {
+    border-radius: 4px;
+    min-width: 40px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
+
+/* ── QToolTip ─────────────────────────────────────────────── */
+QToolTip {
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
+
+/* ── QSlider (temperature 滑块) ──────────────────────────── */
+QSlider::groove:horizontal {
+    height: 4px;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+QSlider::sub-page:horizontal {
+    border-radius: 2px;
+}
+
+/* ── QProgressBar (评分条) ───────────────────────────────── */
+QProgressBar {
+    border: none;
+    border-radius: 3px;
+    height: 12px;
+    text-align: center;
+    font-size: 11px;
+}
+QProgressBar::chunk {
+    border-radius: 3px;
+}
+
+/* ── QDialog ──────────────────────────────────────────────── */
+QDialog {
+    min-width: 480px;
+}

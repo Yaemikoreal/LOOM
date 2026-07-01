@@ -61,8 +61,56 @@ class ToolRegistry:
 
     # ── 公开接口 ─────────────────────────────────────────────────────────
 
+    def execute(
+        self,
+        need: KnowledgeNeed,
+        safety_fence: Any | None = None,
+        agent: str = "",
+    ) -> KnowledgeResult:
+        """带权限检查和重试降级的工具调用入口（Phase 3 治理入口）。
+
+        优先使用此方法而非直接 fulfill()，因为：
+        1. 权限检查：Agent 越权调用时返回拒绝结果
+        2. 重试降级：单次调用失败自动重试，三次失败降级返回
+
+        Args:
+            need: 单个知识需求
+            safety_fence: 安全围栏实例（用于权限检查）
+            agent: 发起调用的 Agent 名称
+
+        Returns:
+            查询结果（权限拒绝或查询失败时返回 relevance=0.0 的降级结果）
+        """
+        # 权限检查
+        if safety_fence and agent:
+            tool_name = self._need_to_tool_name(need)
+            if not safety_fence.check_tool_permission(agent, tool_name):
+                logger.warning(
+                    "Agent '%s' 无权调用工具 '%s'，已拒绝",
+                    agent, tool_name,
+                )
+                return KnowledgeResult(
+                    content=f"[权限拒绝] Agent '{agent}' 无权限调用 '{tool_name}'",
+                    source=need.source,
+                    concept=need.concept,
+                    relevance=0.0,
+                )
+
+        # 查找 handler
+        handler = self._tools.get(need.source)
+        if handler is None:
+            return KnowledgeResult(
+                content="",
+                source=need.source,
+                concept=need.concept,
+                relevance=0.0,
+            )
+
+        # 带重试的执行
+        return self._execute_with_retry(need, handler)
+
     def fulfill(self, needs: list[KnowledgeNeed]) -> list[KnowledgeResult]:
-        """批量满足知识需求。
+        """批量满足知识需求（保留旧接口兼容，内部调用 execute）。
 
         对每个 KnowledgeNeed 调用对应的工具，
         返回所有成功查询的结果。
@@ -76,11 +124,7 @@ class ToolRegistry:
         results: list[KnowledgeResult] = []
         for need in needs:
             try:
-                handler = self._tools.get(need.source)
-                if handler is None:
-                    logger.warning("未知知识来源: %s", need.source)
-                    continue
-                result = handler(need)
+                result = self.execute(need)
                 results.append(result)
             except Exception as e:
                 logger.warning(
@@ -98,6 +142,69 @@ class ToolRegistry:
     def is_source_available(self, source: KnowledgeSource) -> bool:
         """检查指定数据源是否可用。"""
         return source in self._tools
+
+    # ── 治理方法 ─────────────────────────────────────────────────────────
+
+    def _execute_with_retry(
+        self,
+        need: KnowledgeNeed,
+        handler: ToolHandler,
+        max_retries: int = 3,
+    ) -> KnowledgeResult:
+        """带重试和降级的 handler 执行包装。
+
+        策略：重试(max_retries次) → 全部失败 → 降级返回空结果
+
+        Args:
+            need: 知识需求
+            handler: 工具处理器函数
+            max_retries: 最大重试次数（默认 3）
+
+        Returns:
+            查询结果（全部失败时返回 relevance=0.0 的降级结果）
+        """
+        last_error = ""
+        for attempt in range(max_retries):
+            try:
+                return handler(need)
+            except Exception as e:
+                last_error = str(e)
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        "工具 %s 执行失败 (尝试 %d/%d): %s",
+                        need.source.value, attempt + 1, max_retries, e,
+                    )
+                else:
+                    logger.error(
+                        "工具 %s 执行失败 %d 次，已降级: %s",
+                        need.source.value, max_retries, e,
+                    )
+
+        # 全部失败：降级返回空结果
+        return KnowledgeResult(
+            content=f"[检索失败: {last_error[:200]}]",
+            source=need.source,
+            concept=need.concept,
+            relevance=0.0,
+        )
+
+    @staticmethod
+    def _need_to_tool_name(need: KnowledgeNeed) -> str:
+        """将 KnowledgeNeed 映射为工具名（用于权限表查表）。
+
+        Args:
+            need: 知识需求
+
+        Returns:
+            工具名字符串
+        """
+        mapping = {
+            KnowledgeSource.CANON: "query_canon",
+            KnowledgeSource.SUBCONSCIOUS: "query_subconscious",
+            KnowledgeSource.CHARACTER: "query_character",
+            KnowledgeSource.EVENT: "query_event",
+        }
+        return mapping.get(need.source, "unknown")
 
     # ── 工具实现 ─────────────────────────────────────────────────────────
 
