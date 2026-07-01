@@ -4,6 +4,7 @@
 管理重试逻辑、快照、日志和进度输出。
 """
 
+import concurrent.futures
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -350,6 +351,12 @@ class AutoRunner:
             project_root=project_root,
         )
 
+        # State Projector（Phase 3 — 状态快照缓存，EventStore 可能尚不存在）
+        self.state_projector: Any | None = None
+        if event_store is not None:
+            from opennovel.core.state_projector import StateProjector
+            self.state_projector = StateProjector(event_store, metrics_store=self.metrics)
+
         # Director Agent（可选）
         self.director = None
         if config.director_enabled:
@@ -416,6 +423,31 @@ class AutoRunner:
         style_map = {"info": "dim", "success": "green", "warning": "yellow", "error": "red"}
         style = style_map.get(level, "dim")
         console.print(f"  [{style}]{log_line}[/{style}]")
+
+    @staticmethod
+    def _analyze_chapter_text(text: str) -> dict:
+        """分析章节正文的基础统计（微观并行用，非 LLM，纯确定性）。
+
+        与 Critic 评分并行执行，提取正文的基础特征用于报告和分析。
+        结果仅为统计信息，不参与创作决策。
+
+        Args:
+            text: 章节正文
+
+        Returns:
+            包含分析结果的字典
+        """
+        paragraphs = [p for p in text.split("\n\n") if p.strip()]
+        dialogue_lines = sum(1 for line in text.split("\n") if "“" in line or '"' in line)
+        scene_breaks = text.count("---")
+        word_count_est = len(text)
+
+        return {
+            "paragraphs": len(paragraphs),
+            "dialogue_lines": dialogue_lines,
+            "scene_breaks": scene_breaks,
+            "word_count_est": word_count_est,
+        }
 
     def _check_safety(self, agent: str, additional_tokens: int = 0) -> bool:
         """执行安全围栏检查，失败时记录日志。
@@ -814,10 +846,18 @@ class AutoRunner:
         self._log(f"Writer 创作完成: {word_count} 字", "success")
 
         for attempt in range(MAX_CHAPTER_RETRIES + 1):
-            # Critic 评分
-            console.print(f"[bold]📊 Critic 评分[/bold] (第 {attempt + 1} 次)")
-            with self.metrics.trace("critic", "evaluate", chapter_id):
-                evaluation = self.critic.evaluate(chapter_id, chapter_text, outline)
+            # Phase 3 微观并行：首次评估与文本分析同时进行
+            if attempt == 0:
+                console.print(f"[bold]📊 Critic 评分[/bold] (第 {attempt + 1} 次，并行模式)")
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    future_critic = executor.submit(self.critic.evaluate, chapter_id, chapter_text, outline)
+                    future_analysis = executor.submit(self._analyze_chapter_text, chapter_text)
+                    evaluation = future_critic.result()
+                    chapter_analysis = future_analysis.result()
+            else:
+                console.print(f"[bold]📊 Critic 评分[/bold] (第 {attempt + 1} 次)")
+                with self.metrics.trace("critic", "evaluate", chapter_id):
+                    evaluation = self.critic.evaluate(chapter_id, chapter_text, outline)
             d = evaluation.dimensions
             score_str = (
                 f"{evaluation.total_score} 分 "
@@ -987,6 +1027,14 @@ class AutoRunner:
                     )
                 except Exception as e:
                     self._log(f"摘要写入失败（不影响创作）: {e}", "warning")
+
+                # Phase 3: 显式编排 State Projector 缓存
+                if self.state_projector is not None and active_chars:
+                    for char_id in active_chars:
+                        try:
+                            self.state_projector.project_and_cache(char_id, chapter_id)
+                        except Exception as e:
+                            logger.debug("State Projector 缓存失败（非关键路径）: %s", e)
 
             except Exception as e:
                 self._log(f"Manager 更新失败: {e}", "error")

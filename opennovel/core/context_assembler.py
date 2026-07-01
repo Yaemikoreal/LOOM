@@ -15,6 +15,7 @@
 import logging
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import tiktoken
 
@@ -311,6 +312,7 @@ def assemble_context(
     yaml_storage: YAMLStorage | None = None,
     strategy: ContextStrategy = ContextStrategy.STANDARD,
     chunks: list | None = None,
+    metrics_store: Any | None = None,
 ) -> list[dict[str, str]]:
     """通用上下文组装入口，为所有 Agent 提供统一的分级上下文管道。
 
@@ -590,35 +592,53 @@ def _assemble_standard(
         total_tokens += state_tokens
         state_used += state_tokens
 
-    # 3.5 状态投影快照 (STATE MEMORY) — 可选，使用剩余预算
+    # 3.5 状态投影快照 (STATE MEMORY) — 优先从缓存读取，回退到实时投影
     _proj_chapter = chapter_path.stem if chapter_path else ""
     if chars_to_load and _proj_chapter:
         try:
-            db_path = project_root / ".novel.db"
-            if db_path.exists():
-                event_store = EventStore(db_path)
-                projector = StateProjector(event_store)
-                snapshots = []
-                for char_id in chars_to_load:
-                    snap = projector.project(char_id, _proj_chapter)
-                    if snap.event_count > 0:
-                        snapshots.append(snap)
+            snapshots: list[Any] = []
+            proj_text_cache: str | None = None
 
-                if snapshots:
-                    proj_text = projector.format_snapshots(snapshots)
-                    proj_text = wrap_with_authority_tag(proj_text, AuthorityLevel.STATE_MEMORY)
-                    proj_tokens = counter.count(proj_text)
-                    remaining = state_budget - state_used
-                    if remaining > 0 and proj_tokens <= remaining:
-                        msg = ContextMessage(
-                            role="system",
-                            content=proj_text,
-                            authority=AuthorityLevel.STATE_MEMORY,
-                        )
-                        msg.token_count = proj_tokens
-                        messages.append(msg)
-                        total_tokens += proj_tokens
-                        state_used += proj_tokens
+            # Phase 3: 优先从 MetricsStore.state_cache 读取
+            if metrics_store is not None:
+                for char_id in chars_to_load:
+                    cached = metrics_store.get_state_cache(char_id)
+                    if cached and cached.chapter_id == _proj_chapter:
+                        from opennovel.schemas.state import CharacterStateSnapshot
+                        snap = CharacterStateSnapshot.model_validate_json(cached.state_json)
+                        if snap.event_count > 0:
+                            snapshots.append(snap)
+                            if proj_text_cache is None and cached.digest_text:
+                                proj_text_cache = cached.digest_text
+
+            # 缓存未命中或无指标库时，回退到实时 EventStore 投影
+            if not snapshots:
+                db_path = project_root / ".novel.db"
+                if db_path.exists():
+                    event_store = EventStore(db_path)
+                    projector = StateProjector(event_store)
+                    for char_id in chars_to_load:
+                        snap = projector.project(char_id, _proj_chapter)
+                        if snap.event_count > 0:
+                            snapshots.append(snap)
+                    if snapshots:
+                        proj_text_cache = projector.format_snapshots(snapshots)
+
+            # 注入到上下文
+            if proj_text_cache:
+                proj_text = wrap_with_authority_tag(proj_text_cache, AuthorityLevel.STATE_MEMORY)
+                proj_tokens = counter.count(proj_text)
+                remaining = state_budget - state_used
+                if remaining > 0 and proj_tokens <= remaining:
+                    msg = ContextMessage(
+                        role="system",
+                        content=proj_text,
+                        authority=AuthorityLevel.STATE_MEMORY,
+                    )
+                    msg.token_count = proj_tokens
+                    messages.append(msg)
+                    total_tokens += proj_tokens
+                    state_used += proj_tokens
         except Exception as e:
             logger.debug("状态投影快照注入失败（非关键路径）: %s", e)
 
