@@ -1,4 +1,3 @@
-# OpenNovel 全局配置
-# 三层模型路由：novel.yaml > .opennovel.yaml > 硬编码
-workspace_dir: "novels"
-default_model: "deepseek/deepseek-v4-flash"
+default_api_key: sk-210fc7bfd43d4686869acb1b33d7c9fc
+default_model: deepseek/deepseek-v4-flash
+workspace_dir: novels

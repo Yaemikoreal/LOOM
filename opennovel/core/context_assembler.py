@@ -310,6 +310,7 @@ def assemble_context(
     active_characters: list[str] | None = None,
     yaml_storage: YAMLStorage | None = None,
     strategy: ContextStrategy = ContextStrategy.STANDARD,
+    chunks: list | None = None,
 ) -> list[dict[str, str]]:
     """通用上下文组装入口，为所有 Agent 提供统一的分级上下文管道。
 
@@ -321,22 +322,34 @@ def assemble_context(
     - active_characters 可显式传入（不依赖 chapter_path 的 Frontmatter）
     - prompt_path 必须显式指定
     - causal_chain_context 注入因果链上下文（Phase 2.1）
+    - chunks 可选传入 SearchPipeline 输出，自动按权威层级分配预算
 
     Args:
         project_root: 项目根目录路径
-        task_message: 最终的 user 消息（Writer 的大纲+创作指令 / Critic 的评审指令等）
+        task_message: 最终的 user 消息
         prompt_path: Agent 人格 Prompt 文件路径
         chapter_path: 当前章节路径（可选，用于提取活跃角色和历史章节注入）
-        canon_content: 从检索引擎获取的设定内容
-        subconscious_content: 从潜意识池检索的灵感碎片
-        causal_chain_context: 因果链上下文文本（格式化的事件因果关系）
-        active_characters: 显式指定的角色 ID 列表（优先于从 chapter_path 提取）
+        canon_content: 从检索引擎获取的设定内容（旧接口，保留兼容）
+        subconscious_content: 从潜意识池检索的灵感碎片（旧接口，保留兼容）
+        causal_chain_context: 因果链上下文文本
+        active_characters: 显式指定的角色 ID 列表
         yaml_storage: YAML 存储实例
         strategy: 上下文组装策略
+        chunks: RetrievalResult.chunks 列表（SearchPipeline 输出），
+                自动按 source 分配权威层级
 
     Returns:
         组装完成的消息列表，可直接传入 LLM API
     """
+    # 如果提供了 chunks，自动分割到各通道
+    if chunks:
+        canon_chunks, state_chunks, sub_chunks = _split_chunks_by_authority(chunks)
+        if not canon_content:
+            canon_content = _format_chunks_for_context(canon_chunks)
+        if not causal_chain_context:
+            causal_chain_context = _format_chunks_for_context(state_chunks)
+        if not subconscious_content:
+            subconscious_content = _format_chunks_for_context(sub_chunks)
     if strategy == ContextStrategy.PANORAMIC:
         return _assemble_panoramic(
             chapter_path,
@@ -928,3 +941,66 @@ def _apply_circuit_breaker(
     # 过滤掉空消息
     messages = [m for m in messages if m.token_count > 0 or m.authority is None]
     return messages
+
+
+# ── SearchPipeline 集成 (ADR 0007) ─────────────────────────────────
+
+
+def _split_chunks_by_authority(
+    chunks: list,
+) -> tuple[list, list, list]:
+    """将 SearchPipeline 的 chunks 按权威层级分割。
+
+    方案 C（按 source 分配权威层级）:
+    - CANON 层: source=canon
+    - STATE_MEMORY 层: source=character/event
+    - SUBCONSCIOUS 层: source=subconscious
+
+    Args:
+        chunks: RetrievalResult.chunks 列表（RerankedChunk 对象）
+
+    Returns:
+        (canon_chunks, state_chunks, subconscious_chunks)
+    """
+    canon: list = []
+    state: list = []
+    sub: list = []
+
+    for rc in chunks:
+        chunk = rc.chunk if hasattr(rc, "chunk") else rc
+        source = getattr(chunk, "source", None)
+        source_str = str(source.value if hasattr(source, "value") else source)
+
+        if source_str == "canon":
+            canon.append(rc)
+        elif source_str in ("character", "event"):
+            state.append(rc)
+        elif source_str == "subconscious":
+            sub.append(rc)
+        else:
+            state.append(rc)  # 默认归入 STATE_MEMORY
+
+    return canon, state, sub
+
+
+def _format_chunks_for_context(chunks: list, max_chunks: int = 5) -> str:
+    """将 chunks 格式化为上下文注入文本。
+
+    Args:
+        chunks: RerankedChunk 列表
+        max_chunks: 最大使用块数
+
+    Returns:
+        格式化文本
+    """
+    parts: list[str] = []
+    for rc in chunks[:max_chunks]:
+        chunk = rc.chunk if hasattr(rc, "chunk") else rc
+        text = getattr(chunk, "text", str(chunk))
+        score = getattr(rc, "reranker_score",
+                        getattr(rc, "rrf_score", 0.0))
+        if score > 0:
+            parts.append(f"[score={score:.3f}]\n{text.strip()}")
+        else:
+            parts.append(text.strip())
+    return "\n\n".join(parts)

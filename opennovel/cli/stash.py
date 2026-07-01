@@ -41,5 +41,16 @@ def stash(
     retriever = Retriever(project_root)
     retriever.add_to_subconscious(text, tags)
 
+    # 更新 FTS5 索引（增量）
+    try:
+        from opennovel.storage.fts5 import Fts5Store
+
+        fts5 = Fts5Store(project_root)
+        fts5.incremental_update_text(
+            text, "subconscious", "stash", {"tags": tags},
+        )
+    except Exception as e:
+        rprint(f"  [yellow]搜索索引更新失败: {e}[/yellow]")
+
     tag_display = " ".join(f"[dim]#{t}[/dim]" for t in tags)
     rprint(f"  [green]✓[/green] 已存入: {text[:50]}... {tag_display}")

@@ -82,3 +82,17 @@ def auto(
         rprint(f"\n[bold yellow]完成，但有 {report.failed_chapters} 章失败[/bold yellow]")
     else:
         rprint(f"\n[bold green]全部完成！[/bold green] 共 {report.successful_chapters} 章")
+
+    # 检查搜索索引是否过期
+    try:
+        from opennovel.storage.fts5 import Fts5Store
+
+        fts5 = Fts5Store(project_root)
+        chapter_count = len(list((project_root / "draft").glob("ch_*.md")))
+        is_stale, msg = fts5.check_staleness(chapter_count)
+        if is_stale:
+            rprint(f"\n[yellow]🔍 {msg}[/yellow]")
+            rprint("  执行 [bold]novel reindex[/bold] 以更新搜索索引")
+    except Exception as e:
+        logger = __import__("logging").getLogger(__name__)
+        logger.debug("索引过期检查失败: %s", e)

@@ -60,6 +60,12 @@ class _NovelConfigSchema(BaseModel):
     director_enabled: bool | None = None
     agents: dict[str, dict] = Field(default_factory=dict)
 
+    # 搜索配置 (ADR 0007)
+    reranker_enabled: bool | None = None
+    reranker_model: str | None = None
+    reranker_device: str | None = None
+    search_top_k: int | None = Field(default=None, ge=1, le=100)
+
 
 class ConfigValidationError(Exception):
     """配置校验失败时抛出的异常，携带精确的错误详情。
@@ -158,6 +164,12 @@ class LoomConfig:
 
     # 安全围栏配置 (ADR 0006)
     safety_fence: _SafetyFenceConfig = field(default_factory=_SafetyFenceConfig)
+
+    # 搜索配置 (ADR 0007 — 混合语义-关键词检索 + 重排序)
+    reranker_enabled: bool = True
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_device: str = ""  # 空字符串 = 自动检测 (cuda > mps > cpu)
+    search_top_k: int = 5  # 最终返回结果数
 
     extra: dict = field(default_factory=dict)
 
@@ -264,6 +276,10 @@ class LoomConfig:
             "words_per_chapter",
             "outline",
             "director_enabled",
+            "reranker_enabled",
+            "reranker_model",
+            "reranker_device",
+            "search_top_k",
         }
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
@@ -289,6 +305,10 @@ class LoomConfig:
             agent_manager=agent_manager,
             agent_director=agent_director,
             director_enabled=bool(data.get("director_enabled", True)),
+            reranker_enabled=bool(data.get("reranker_enabled", True)),
+            reranker_model=str(data.get("reranker_model", "BAAI/bge-reranker-v2-m3")),
+            reranker_device=str(data.get("reranker_device", "")),
+            search_top_k=int(data.get("search_top_k", 5)),
             extra=extra,
         )
 
@@ -319,6 +339,14 @@ class LoomConfig:
 
         # Director 配置
         data["director_enabled"] = self.director_enabled
+
+        # 搜索配置 (ADR 0007)
+        data["reranker_enabled"] = self.reranker_enabled
+        if self.reranker_model != "BAAI/bge-reranker-v2-m3":
+            data["reranker_model"] = self.reranker_model
+        if self.reranker_device:
+            data["reranker_device"] = self.reranker_device
+        data["search_top_k"] = self.search_top_k
 
         # per-agent 配置
         agents: dict = {}

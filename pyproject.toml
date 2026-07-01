@@ -62,13 +62,17 @@ local-embedding = [
 phase2 = [
     "networkx>=3.1",
 ]
+gui = [
+    "PySide6>=6.6.0",
+]
 
 [project.scripts]
 novel = "opennovel.cli.main:app"
 novel-mcp = "opennovel.mcp_server:cli_main"
+novel-desktop = "opennovel_desktop.main:main"
 
 [tool.setuptools.packages.find]
-include = ["opennovel*"]
+include = ["opennovel*", "opennovel_desktop*"]
 
 [tool.ruff]
 target-version = "py310"

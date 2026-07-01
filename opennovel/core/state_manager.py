@@ -206,6 +206,9 @@ class StateManager:
             self.event_store.delete_events_by_ids(events_added)
             logger.info("已删除 %d 条事件记录", len(events_added))
 
+        # 清理 FTS5 索引（已回滚的文件重新分块覆盖）
+        self._clean_fts5_after_rollback(delta_files)
+
         if rollback_errors:
             logger.warning("回滚完成，%d 个文件因冲突跳过", len(rollback_errors))
 
@@ -285,6 +288,39 @@ class StateManager:
                 logger.warning("读取快照文件失败: %s, %s", snapshot_file, e)
         snapshots.sort(key=lambda s: s.timestamp, reverse=True)
         return snapshots
+
+    def _clean_fts5_after_rollback(self, delta_files: dict) -> None:
+        """回滚后清理 FTS5 索引：对涉及的文件重新分块覆盖。
+
+        Args:
+            delta_files: rollback snapshot 中的 delta_files 字典
+        """
+        try:
+            from opennovel.core.chunker import MarkdownChunker
+            from opennovel.schemas.search import ChunkSource
+            from opennovel.storage.fts5 import Fts5Store
+
+            fts5 = Fts5Store(self.project_root)
+            chunker = MarkdownChunker()
+
+            for rel_path in delta_files:
+                file_path = self.project_root / rel_path
+                if not file_path.exists():
+                    continue
+                # 根据目录推断 ChunkSource
+                parent = rel_path.split("/")[0]
+                source_map = {
+                    "canon": ChunkSource.CANON,
+                    "characters": ChunkSource.CHARACTER,
+                    "draft": ChunkSource.DRAFT,
+                    "subconscious": ChunkSource.SUBCONSCIOUS,
+                }
+                source = source_map.get(parent, ChunkSource.CANON)
+                chunks = chunker.chunk_file(file_path, source, metadata={"rollback": True})
+                fts5.add_chunks_batch(chunks)
+                logger.debug("FTS5 已更新（回滚）: %s", rel_path)
+        except Exception as e:
+            logger.warning("FTS5 回滚清理失败（非致命）: %s", e)
 
 
 def _serialize_frontmatter(metadata: dict) -> dict:

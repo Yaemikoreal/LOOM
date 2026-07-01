@@ -12,6 +12,7 @@
 - novel list      : 列出工作区所有小说项目
 - novel config    : 查看/设置全局配置
 - novel foreshadow: 查看/管理伏笔追踪
+- novel reindex   : 全量重建搜索索引（FTS5 + 向量索引）
 """
 
 import sys
@@ -25,6 +26,7 @@ from rich.table import Table
 
 from opennovel.cli.auto import auto_app
 from opennovel.cli.commit import commit_app
+from opennovel.cli.reindex import reindex_app
 from opennovel.cli.stash import stash_app
 from opennovel.cli.write import write_app
 
@@ -42,6 +44,7 @@ app.add_typer(write_app, name="write")
 app.add_typer(commit_app, name="commit")
 app.add_typer(stash_app, name="stash")
 app.add_typer(auto_app, name="auto")
+app.add_typer(reindex_app, name="reindex")
 
 
 @app.command()

@@ -35,6 +35,7 @@ class ToolRegistry:
         retriever: Any | None = None,
         event_store: Any | None = None,
         storage: Any | None = None,
+        search_pipeline: Any | None = None,
     ) -> None:
         """初始化工具注册中心。
 
@@ -43,11 +44,14 @@ class ToolRegistry:
             retriever: 语义检索实例（用于 canon/subconscious 查询）
             event_store: 事件账本实例（用于 event 查询）
             storage: YAML 存储实例（用于 character 查询）
+            search_pipeline: SearchPipeline 实例（ADR 0007 三通道管道），
+                             提供时不使用旧 retriever 路径
         """
         self.project_root = project_root
         self._retriever = retriever
         self._event_store = event_store
         self._storage = storage
+        self._search_pipeline = search_pipeline
         self._tools: dict[KnowledgeSource, ToolHandler] = {
             KnowledgeSource.CANON: self._query_canon,
             KnowledgeSource.SUBCONSCIOUS: self._query_subconscious,
@@ -97,54 +101,70 @@ class ToolRegistry:
 
     # ── 工具实现 ─────────────────────────────────────────────────────────
 
-    def _query_canon(self, need: KnowledgeNeed) -> KnowledgeResult:
-        """查询世界观设定文档。
+    def _query_through_pipeline(
+        self, need: KnowledgeNeed, source: KnowledgeSource, retriever_method: str,
+        not_found_msg: str,
+    ) -> KnowledgeResult | None:
+        """通过 SearchPipeline 查询（共享方法），返回 None 时走 fallback。
 
         Args:
             need: 知识需求
+            source: 目标来源枚举
+            retriever_method: 旧 Retriever 方法名 ("query_canon" / "query_subconscious")
+            not_found_msg: 无结果时的提示文案
 
         Returns:
-            查询结果
+            KnowledgeResult（已提取 relevance 分数）或 None（需 fallback）
         """
+        # SearchPipeline 路径（ADR 0007 RRF 优先）
+        if self._search_pipeline is not None:
+            query = f"{need.concept} {need.context}".strip()[:500]
+            try:
+                result = self._search_pipeline.search_for_agent(query, top_k=2)
+                if result.has_results:
+                    # 提取 top-1 的 rrf_score 作为 relevance（归一化到 0~1）
+                    relevance = result.chunks[0].rrf_score if result.chunks else 0.0
+                    # rrf_score 通常 0.02~0.05，映射到 0.3~1.0 范围
+                    relevance = min(1.0, relevance * 20)
+                    content = result.format_for_context(max_chars=1000)
+                    return KnowledgeResult(
+                        content=content,
+                        source=source,
+                        concept=need.concept,
+                        relevance=relevance,
+                    )
+            except Exception as e:
+                logger.warning("SearchPipeline %s 查询失败: %s", source.value, e)
+
+        # 旧路径 fallback
         if self._retriever is None:
             return KnowledgeResult(
-                content="",
-                source=KnowledgeSource.CANON,
-                concept=need.concept,
-                relevance=0.0,
+                content="", source=source, concept=need.concept, relevance=0.0,
             )
         query = f"{need.concept} {need.context}".strip()[:500]
-        content = self._retriever.query_canon(query, top_k=2)
+        retriever_fn = getattr(self._retriever, retriever_method, None)
+        if retriever_fn is None:
+            return KnowledgeResult(
+                content="", source=source, concept=need.concept, relevance=0.0,
+            )
+        content = retriever_fn(query, top_k=2)
         return KnowledgeResult(
-            content=content or "未找到相关设定",
-            source=KnowledgeSource.CANON,
+            content=content or not_found_msg,
+            source=source,
             concept=need.concept,
             relevance=1.0 if content else 0.0,
         )
 
+    def _query_canon(self, need: KnowledgeNeed) -> KnowledgeResult:
+        """查询世界观设定文档。"""
+        return self._query_through_pipeline(
+            need, KnowledgeSource.CANON, "query_canon", "未找到相关设定",
+        )
+
     def _query_subconscious(self, need: KnowledgeNeed) -> KnowledgeResult:
-        """查询灵感潜意识池。
-
-        Args:
-            need: 知识需求
-
-        Returns:
-            查询结果
-        """
-        if self._retriever is None:
-            return KnowledgeResult(
-                content="",
-                source=KnowledgeSource.SUBCONSCIOUS,
-                concept=need.concept,
-                relevance=0.0,
-            )
-        query = f"{need.concept} {need.context}".strip()[:500]
-        content = self._retriever.query_subconscious(query, top_k=2)
-        return KnowledgeResult(
-            content=content or "未找到相关灵感",
-            source=KnowledgeSource.SUBCONSCIOUS,
-            concept=need.concept,
-            relevance=1.0 if content else 0.0,
+        """查询灵感潜意识池。"""
+        return self._query_through_pipeline(
+            need, KnowledgeSource.SUBCONSCIOUS, "query_subconscious", "未找到相关灵感",
         )
 
     def _query_character(self, need: KnowledgeNeed) -> KnowledgeResult:

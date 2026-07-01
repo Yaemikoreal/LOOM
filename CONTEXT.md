@@ -78,6 +78,33 @@ _Avoid_: 全局全量 dump、field_path 级 JSON Patch
 
 ### 自主创作系统（Gen2）
 
+**Single-Process Serial Pipeline** (单进程串行流水线):
+OpenNovel 的核心架构决策，**不可动摇**。长篇小说的连贯性要求第 N 章的 Writer 必须知道第 N-1 章中角色的状态变更。多 Writer 并行创作会导致剧情逻辑冲突和设定撞车，合并审阅代价比重写还高。
+_Avoid_: 多 Writer 并行、分布式创作
+
+**Micro-Parallelism** (微观并行):
+在单章流水线内部，对互不依赖的子任务并行执行以缩短等待时间。当前已识别的水位：
+- **可并行点**：Writer 写完正文后，Critic（质量评分）和 Auditor（事件提取）可同时启动——两者都只依赖正文，互不干扰
+- **不可并行点**：Critic 评分 → Writer 修订 → Manager 更新 → Commit 必须严格串行
+_注意_: 微观并行是局部延迟优化，不改变单进程串行流水线的架构决策
+
+**State Digest** (状态摘要):
+Manager 更新完角色/事件状态后，不将全量日志传给下一章，而是生成结构化的摘要快照。核心原则：**同时服务于系统逻辑和 LLM**。
+
+实现方案：**B — EventStore 状态投影缓存**。
+- **底层（结构化）**：EventStore 是唯一真相源。每次 Commit 后，[[#State Projector]] 增量折叠出当前状态，以 **JSON 格式**缓存到 `.novel.metrics.db` 的 `state_cache` 表。系统逻辑（Conditional Jump、Director 分析、全局校验）直接查表 O(1)，无需从 EventLog 重新折叠。
+- **上层（文本渲染）**：当 ContextAssembler 为下一章 Writer 组装上下文时，从 `state_cache` 读出 JSON，**动态渲染**为一段极简的自然语言摘要注入 Prompt（如 `【当前状态】主角：左臂骨折，情绪抑郁，持有物品：魔法石`）。不预存渲染后的文本，避免格式僵化。
+
+与 [[#State Projector]] 的区分：State Projector 是**计算引擎**（从 EventLog → JSON 状态的折叠函数），State Digest 是**产物**（缓存后的 JSON + 渲染后的摘要）。State Projector 可以是实时计算或增量更新，State Digest 是计算结果的一次性缓存在 state_cache 表。
+_Avoid_: Frontmatter 存储（污染元数据）、独立 digest/ 文件（与 summaries/ 功能重叠）
+
+**Context Isolation** (上下文隔离):
+借鉴 Claude Code 的"每个 Agent 独立上下文"设计哲学，但实现为单进程内的 Role-based Context Trimming（而非多进程 fork-exec）。ContextAssembler 根据目标 Agent 角色动态裁剪上下文：
+- **Writer 需要**: 大纲 + 前文摘要 + State Digest + 设定（CANON）
+- **Critic 需要**: 正文 + 评分标准 + 设定（CANON）
+- **Manager 需要**: Critic 反馈 + 正文事件
+- **Director 需要**: 评分趋势 + 因果链 + 全局状态
+
 **AutoRunner**:
 `novel auto` 的编排器（非 Agent），负责解析大纲、按序执行章节流水线（think → write → evaluate → revise → update/skip）、管理重试、条件路由和日志。包含条件跳转逻辑（高分章节跳过 Manager 实时更新、按章节类型路由 Director）。
 _Avoid_: 导演、Orchestrator
@@ -150,6 +177,44 @@ Agent 自治的查询协议。包含 `concept`（查询概念）、`source`（�
 
 **Safety Fence** (安全围栏):
 对 Agent 自治行为的约束边界。实现于 `core/safety_fence.py` 的 `SafetyFence` 类。提供四个维度的检查：递归深度防护（`check_recursion_depth`，默认上限 3 层嵌套）、Token 预算追踪（`check_token_budget`，默认每调用 4000 tokens）、超时熔断（`check_timeout`，默认 120s）、Canon 不可违背（预留）。通过 `SafetyFenceConfig` 配置，可通过 `novel.yaml` 的 `safety_fence` 字段覆盖或禁用。提供 `autonomous_call()` 上下文管理器自动管理深度计数和预算覆盖，违规记录于 `SafetyViolation` 列表。当前集成于 hot_fix 自治调用和 Director 分析调用。
+_Phase 3 进化方向_: 从轻量约束层进化为 [[#Governance Infrastructure]]。
+
+**Governance Infrastructure** (治理基础设施):
+SafetyFence 在 Phase 3 的进化目标。借鉴 Claude Code Harness 的确定性基础设施设计哲学，从被动防守转变为主动治理。核心三组件（按 Phase 3 优先级排序）：
+
+1. **Tool Call Permission Table** (工具调用权限表) — **必须做**。每个 Agent 有允许/禁止的工具白名单。例如：Writer 不可写 EventStore（否则会伪造设定变更），Critic 不可修改正文。实现为字典映射 `{agent_name: {allowed_tools: [...], disallowed_tools: [...]}}`，查表 O(1)。从根源杜绝 Agent 越权。
+   _Avoid_: 全局开放（不可信）、基于角色的隐式推断（不精确）
+
+2. **Layered Retry + Degradation** (层级化重试+降级) — **必须做**。夜间挂机 Auto 跑 10 章时，单点工具失败不应导致整个流水线崩溃。策略：重试(3次) → 降级(跳过工具，返回空结果，在 Prompt 标注"检索失败") → 继续生成。保证流水线"绝不因单点工具失败而彻底停摆"。
+   _Avoid_: 直接抛异常中断（用户毁灭性体验）、静默吞错误
+
+3. **Structured Audit Log** (结构化审计日志) — **可延后**。Trace ID + 文本日志已覆盖基本调试需求。将工具调用完整链路结构化入库（.novel.metrics.db 的 agent_trace 表）虽有长期分析价值，但非 Phase 3 刚需。
+
+**Governance = SafetyFence + AutoRunner** (治理公式):
+OpenNovel 的治理模型不需要独立的事件总线或泛化 Lifecycle Hooks 系统。长篇小说创作是高度确定性的线性流水线，引入泛化事件总线会导致：
+- 执行顺序不可控（多监听者响应同一事件 → 竞态）
+- 异常隔离困难（一个 Hook 抛异常 → 主流程崩溃）
+- 魔法太多（隐式副作用 → 调试噩梦）
+
+治理模型 = **SafetyFence（硬编码围栏）** + **AutoRunner（显式编排）**：
+- 权限门控：ToolRegistry.execute() 入口处的 if/else，硬编码在 SafetyFence 内
+- 层级化重试：ToolRegistry.execute() 外层的装饰器/try-catch，同样硬编码
+- 审计日志：execute() 的 finally 块中直接写入，确定性执行
+- 跨组件联动（如 Manager 更新后触发 State Projector 折叠）：由 AutoRunner 编排器**显式调用**，所见即所得：
+  ```
+  manager.run(...)
+  state_projector.project_and_cache()  # 显式编排，不是隐式 Hook
+  ```
+_设计哲学_: **枯燥但确定**（Boring but deterministic）。最枯燥的硬编码 if/else 在几十万字的流水线中比优雅的事件总线可靠 100 倍。
+
+**Safety Fence Fixed Slots** (安全围栏固定插槽):
+不搞动态事件总线，但为了未来第三方插件扩展，SafetyFence 内部提供两个固定回调注册点，且只允许注册一个（不允许多监听者）：
+  ```
+  pre_execute_hook(agent_id, tool_name, args) -> Optional[DenyReason]
+  post_execute_hook(agent_id, tool_name, result)
+  ```
+两个插槽均为 Optional，默认 None。注册第二个 pre_hook 时覆盖第一个。拒绝多监听者模式。
+_Avoid_: 事件总线、Pub/Sub、多监听者链
 
 **Conditional Jump** (条件跳转):
 AutoRunner 中的效率优化分支。例如 Critic 评分 > 90 时跳过 Manager 即时状态提取，改为批处理。实现于 `auto_runner.py` 的 `run_chapter()` 和 `_process_deferred_manager_updates()`。
@@ -166,7 +231,13 @@ Agent 自治的子特性，Critic 发现局部硬伤时触发 Writer 的段落�
 ### 人机交互层
 
 **Human-AI Co-creation Cockpit** (人机共创驾驶舱):
-PySide6 单窗口桌面应用，同仓库独立包 `opennovel_desktop/`，CLI 入口 `novel-desktop`。单窗口多面板布局：左侧导航（按钮切换文件树/角色卡片/大纲概览）→ 中央 NovelEditor（QPlainTextEdit 基座）→ 右侧标签面板（Critic 反馈/Agent 时间线/评分趋势/检索/设置/Commit Diff）。底部状态栏显示 Token 余量、API 状态、章节进度等。核心交互：右侧 Critic 报警时左侧编辑器自动高亮相关段落；左侧修改后右侧自动触发状态重算。目标不是更好的编辑器，而是让 AI 创作过程"可见、可控、可干预"。
+PySide6 单窗口桌面应用，同仓库独立包 `opennovel_desktop/`。三种启动方式：`novel-desktop`（CLI 命令）、`novel-desktop.bat`（开发双击脚本，保留控制台窗口）、`dist/novel-desktop/novel-desktop.exe`（PyInstaller 打包产物，无 Python 依赖）。单窗口多面板布局：左侧导航（按钮切换文件树/角色卡片/大纲概览）→ 中央 NovelEditor（QPlainTextEdit 基座）→ 右侧标签面板（Pipeline/Critic/Diff 固定标签 + 日志/搜索/设置 上下文标签）。底部状态栏显示 Token 余量、API 状态、章节进度等。核心交互：右侧 Critic 报警时左侧编辑器自动高亮相关段落；左侧修改后右侧自动触发状态重算。目标不是更好的编辑器，而是让 AI 创作过程"可见、可控、可干预"。
+
+**LogManager** (日志管理器):
+GUI 日志系统的全局单例。将 Python logging 输出写入 `logs/gui-YYYY-MM-DD.log`（RotatingFileHandler，最大 5MB，保留 3 份），同时通过 `_LogSignalBridge` 的 Qt Signal 转发到 LogPanel。自动捕获 `opennovel.*` 命名空间下所有模块的日志。提供 `LogManager.info()/warning()/error()/debug()` 便捷静态方法。
+
+**LogPanel** (日志查看面板):
+右侧上下文标签之一，`Ctrl+Shift+L` 或视图菜单唤出。等宽字体滚动日志视图，支持级别过滤（INFO/DEBUG/WARNING/ERROR）、暂停/继续、清除、自动滚动。日志颜色编码：INFO 绿色、WARNING 金色、ERROR 朱红。上限 2000 条防内存溢出。
 
 **NovelEditor** (编辑器组件):
 继承 `QPlainTextEdit` + `QSyntaxHighlighter` 的轻量 Markdown 编辑器。通过 ~200 行正则实现基础语法高亮（标题/加粗/对话引用/分割线）。预留 `appendStreamingText(text)` 和 `highlightDiff(start, end, color)` 接口用于 Agent 流式输出和差异高亮。右键菜单集成"发送给 Agent 润色/续写/扩写"。不含实时 Markdown 渲染预览。
@@ -359,8 +430,25 @@ EventStore 中事件之间的因果关联。通过 `caused_by` 外键和 `relate
 **Canon Exemption** (规则豁免):
 允许作者在特定场景下临时跳过世界观规则检查的机制。支持两个层级：行内豁免（`<!-- canon_exempt: rule_id -->` Markdown 注释，精确到段落，优先级高）和章节豁免（章节 Frontmatter 的 `canon_exemptions` 字段，作用于整章）。豁免标记在 `CanonChecker.check_text()` 检测到违规时被二次校验——如果原文包含匹配的豁免标记，违规降级忽略或降为 INFO。不依赖 LLM。实现于 `core/canon_checker.py` 的 `_check_exemptions()` 方法。
 
+**Hybrid Tool-Use Mode** (混合工具调用模式):
+Agent 自治的工具调用协议采用双轨架构：**原生 Tool-Use 优先，标记解析兜底**。通过 `LLMConfig.supports_native_tool_use` 能力探测字段动态切换。这是兼顾稳定性与多供应商兼容性的工程最优解。
+
+**Native Fast Path** (原生高速通道):
+当检测到模型支持原生 Tool-Use（或用户手动开启）时，走 LiteLLM 的原生 Tool-Use 协议。API 层直接返回结构化 JSON，系统执行工具后将 `tool_result` 拼回 Context 再次请求。适用于 DeepSeek、Anthropic 等闭源模型。
+_Avoid_: 自解析、文本标记（闭源模型场景下不要降级使用标记解析）
+
+**Universal Fallback** (通用回退层):
+对不支持原生 Tool-Use 的模型（开源/本地小模型），使用升级版标记解析协议。**废弃当前 `##TOOL_CALL##|管道符|分隔` 格式**——管道符格式在参数包含 `|` 或正文误输出类似格式时必然解析错误。升级为 XML/JSON 混合块：
+```
+<tool_call>
+{"tool": "search_canon", "args": {"query": "角色当前心理状态"}, "reason": "确认动机变化"}
+</tool_call>
+```
+通过 `<tool_call>` 标签提取 JSON，完全避免正文误触发。
+_Avoid_: 管道符分隔、##TOOL_CALL## 旧格式（立即废弃）
+
 **Agent Autonomy** (Agent 自治引擎):
-	基于 ADR 0006 的 Mid-Write 工具调用实现。`ToolCallParser` 从 LLM 输出中解析 `##TOOL_CALL##` 标记（格式：工具名|查询内容|查询原因），`ToolCallExecutor` 将请求路由到 ToolRegistry 执行，`AutonomousWriteLoop` 管理多轮交互循环（含 SafetyFence 约束）。Writer.`write_with_autonomy()` 整合该能力，创作 Prompt 末尾自动注入工具调用协议说明。AutoRunner 在 safety_fence 启用时自动使用自治模式。测试位于 `tests/test_agent_autonomy.py`。
+基于 ADR 0006 的 Mid-Write 工具调用实现。`ToolCallParser` 从 LLM 输出中解析工具调用标记，`ToolCallExecutor` 将请求路由到 ToolRegistry 执行，`AutonomousWriteLoop` 管理多轮交互循环（含 SafetyFence 约束）。新架构下：原生通道走 LiteLLM 原生解析，回退通道走 `<tool_call>` JSON 解析。Writer.`write_with_autonomy()` 整合该能力。AutoRunner 在 safety_fence 启用时自动使用自治模式。测试位于 `tests/test_agent_autonomy.py`。
 
 **Global Config** (全局配置):
 	跨项目的 OpenNovel 默认设置。`GlobalConfig` 类（`core/global_config.py`）从项目根目录逐级向上搜索 `.opennovel.yaml` 配置文件，提供三层模型路由（novel.yaml > .opennovel.yaml > 硬编码）。默认模型 `deepseek/deepseek-v4-flash`。配置文件位于项目根 `.opennovel.yaml`。
