@@ -455,7 +455,7 @@ QToolTip {
 | 主题适配 | 无需双套 SVG。单色图标 + QSS `color` 自动适配亮/暗 |
 | 禁用态 | 不需要独立的禁用 SVG。QSS 控制 opacity |
 | 命名约定 | `icon_action-description.svg`（如 `icon_write-chapter.svg`） |
-| 存放位置 | `opennovel_desktop/resources/icons/`，按功能分组子目录 |
+| 存放位置 | V2: `opennovel_desktop/resources/icons/`（已删除），V3: `desktop/src/assets/` |
 
 > **不需要为每个图标单独设计双套 SVG。** 单色 SVG + `currentColor` + QSS 主题色 = 一套资源适配双主题。这是商业级效率。
 
@@ -509,29 +509,9 @@ NovelEditor 的 QSyntaxHighlighter 颜色值，与主题联动：
 
 ---
 
-## 12. QRC 资源结构
+## 12. QRC 资源结构（V2 PySide6 已删除，V3 无 QRC）
 
-```
-opennovel_desktop/
-└── resources/
-    ├── resources.qrc          # Qt Resource 索引文件
-    ├── icons/
-    │   ├── write-chapter.svg
-    │   ├── auto.svg
-    │   ├── stop.svg
-    │   ├── commit.svg
-    │   ├── stash.svg
-    │   ├── save.svg
-    │   ├── search.svg
-    │   ├── settings.svg
-    │   └── ... (约 20-30 SVG)
-    └── themes/
-        ├── base.qss           # 布局样式（与主题无关）
-        ├── light.qss          # 亮色变量
-        └── dark.qss           # 暗色变量
-```
-
-> `resources.qrc` 使用 Qt 标准格式，通过 `rcc` 编译为 `resources_rc.py`，在 `__init__.py` 中 `import resources_rc` 即可全局访问。QSS 文件中用 `url() icon` 引用资源。
+V3 Tauri 架构使用 React + Vite 管理资源，无需 Qt `.qrc` 文件。详见 `docs/adr/0008-gui-v3-architecture.md`。
 
 ---
 

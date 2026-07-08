@@ -231,7 +231,7 @@ Agent 自治的子特性，Critic 发现局部硬伤时触发 Writer 的段落�
 ### 人机交互层
 
 **Human-AI Co-creation Cockpit** (人机共创驾驶舱):
-PySide6 单窗口桌面应用，同仓库独立包 `opennovel_desktop/`。三种启动方式：`novel-desktop`（CLI 命令）、`novel-desktop.bat`（开发双击脚本，保留控制台窗口）、`dist/novel-desktop/novel-desktop.exe`（PyInstaller 打包产物，无 Python 依赖）。单窗口多面板布局：左侧导航（按钮切换文件树/角色卡片/大纲概览）→ 中央 NovelEditor（QPlainTextEdit 基座）→ 右侧标签面板（Pipeline/Critic/Diff 固定标签 + 日志/搜索/设置 上下文标签）。底部状态栏显示 Token 余量、API 状态、章节进度等。核心交互：右侧 Critic 报警时左侧编辑器自动高亮相关段落；左侧修改后右侧自动触发状态重算。目标不是更好的编辑器，而是让 AI 创作过程"可见、可控、可干预"。
+V3.0 桌面端基于 Tauri 2 + React 19 + TypeScript + FastAPI 重写（`desktop/` + `opennovel/api/`），替代已删除的 V2 PySide6 GUI。详见 `docs/adr/0008-gui-v3-architecture.md`。通信架构：单持久 WebSocket（多路复用 task_id）用于 Agent 操作，REST 用于 CRUD。前端 17 个 Zustand 状态 store，后端 FastAPI 8765 端口。启动方式：`python launch_desktop_v3.py` 或 `novel-desktop-v3.bat`。
 
 **LogManager** (日志管理器):
 GUI 日志系统的全局单例。将 Python logging 输出写入 `logs/gui-YYYY-MM-DD.log`（RotatingFileHandler，最大 5MB，保留 3 份），同时通过 `_LogSignalBridge` 的 Qt Signal 转发到 LogPanel。自动捕获 `opennovel.*` 命名空间下所有模块的日志。提供 `LogManager.info()/warning()/error()/debug()` 便捷静态方法。
@@ -267,17 +267,19 @@ Agent 创作循环在右侧面板的默认展现模式。按阶段显示流水�
 右侧标签页之一，展现 Agent 在高价值决策环节的结构化思考过程。与流水线视图联动——点击 Pipeline View 中的任一阶段时，该面板自动切换到对应阶段的推理链内容。内容来自 `logs/reasoning/{trace_id}.json`。
 
 **AppState** (应用状态管理层):
-PySide6 GUI 中的 `QObject` 单例，维护当前项目的内存级缓存和运行状态。持有 `current_project`、`current_file`、`project_summary`、`agent_status`、`recent_scores` 等状态字段。各面板通过 Qt Signal/Slot 订阅感兴趣的状态变更（`file_changed`、`scores_updated`、`agent_status_changed` 等）。用缓存避免每次面板切换都读文件/SQLite，通过信号体系保证状态变更的实时广播。
+V2 PySide6 中的 `QObject` 单例概念在 V3 中由前端的 Zustand stores 集群取代（`agentStore`、`chapterStore`、`characterStore`、`editorStore`、`pipelineStore`、`projectStore` 等 17 个 store）。每个 store 通过 `wsClient.ts` 的 WebSocket 连接实时接收后端推送的状态变更事件（`agent.state_changed`、`agent.stream_chunk`、`agent.evaluation` 等），不再依赖 Qt Signal/Slot 体系。
 
 **AgentWorker** (后台 Agent 工作线程):
-`QObject` + `QThread` 模式的后台执行器。所有 LLM 调用（Writer 创作、Critic 评分、Director 分析）在独立线程中执行。Worker 通过 Qt Signal 回传流式文本片段、进度更新、完成结果。主线程通过 `appendStreamingText(text)` 将流式输出实时追加到 NovelEditor。`QTimer` 120s 超时熔断防止 LLM 挂死。
+V3 架构中 Agent 操作由 FastAPI 后端直接管理，不再需要 `QThread` + `QObject` 模式。后端通过 WS 路由接收前端请求，启动异步 Agent 任务，通过 WS 实时回推 `stream_chunk` / `state_changed` / `evaluation` 事件。前端 `agentStore` 监听这些事件并更新 UI 状态。`state_machine.py` 管理 Agent 操作的生命周期（空闲→运行→完成/失败）。
 
 **Desktop Startup Flow** (桌面端启动流程):
-启动时先读取 `last_session.yaml`：
-- 首次运行（无 `.opennovel.yaml`）→ 弹出初始设置向导（QWizard，4 步：欢迎→工作区目录→API Key→默认模型），完成后生成 `.opennovel.yaml`
-- 有 `last_session.yaml` 且上次项目仍存在 → 直接打开进入驾驶舱
-- 其余情况 → 显示工作区项目选择器（IDE 风格，列出 `novel list` 的工作区项目 + 最近打开历史）
-驾驶舱内支持"关闭项目"回到选择器，不退出进程，AppState 清空 + 页面栈切换。
+V3 启动方式：`python launch_desktop_v3.py`（开发模式）或 `python launch_desktop_v3.py --prod`（生产模式）。`launch_desktop_v3.py` 统一管理 FastAPI 后端 + Tauri 窗口生命周期：
+1. 检查虚拟环境和依赖
+2. 启动 FastAPI 后端（`opennovel.api.main:app`，8765 端口）
+3. 等待后端健康检查通过
+4. 启动 Tauri dev 窗口（开发模式）或运行已构建的 exe（生产模式）
+后端 `lifespan` 在关闭时执行 `manager.shutdown()` 清理 WebSocket 连接。
+快捷脚本：`novel-desktop-v3.bat`（双击直接启动）
 
 **Project File Panel** (项目文件面板):
 左侧导航面板之一，按钮切换唤醒。将项目物理目录按语义分组展示：**正文**（draft/）、**设定**（canon/ + characters/）、**蓝图**（outlines/ + foreshadowing/ + timeline/）、**灵感**（subconscious/）。底层通过配置映射到物理目录，本质是语义层对文件系统的投影。
