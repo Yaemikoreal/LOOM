@@ -136,6 +136,69 @@ class LLMBus:
         self._record_usage(response, model or self.model, kwargs.get("chapter_id", ""))
         return response
 
+    def chat_stream(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """同步流式调用 LLM，逐 Token 生成。
+
+        用于异步生成器桥接（asyncio.Queue + run_in_executor），
+        生产端在 executor 线程中迭代此生成器即可。
+
+        Args:
+            messages: 消息列表
+            model: 覆盖默认模型
+            max_tokens: 覆盖默认最大输出 Token
+            temperature: 覆盖默认温度
+            **kwargs: 传递给 LiteLLM 的额外参数
+
+        Yields:
+            逐个生成的文本片段
+        """
+        call_kwargs: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": messages,
+            "max_tokens": max_tokens if max_tokens is not None else self.default_max_tokens,
+            "temperature": temperature if temperature is not None else self.default_temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if self.api_base:
+            call_kwargs["api_base"] = self.api_base
+        if self.api_key:
+            call_kwargs["api_key"] = self.api_key
+        call_kwargs.update(kwargs)
+
+        response = completion(**call_kwargs)
+        full_text = ""
+        last_usage: Any = None
+        try:
+            for chunk in response:
+                # 最后一个 usage chunk 的 choices 可能为空
+                if chunk.choices:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        full_text += content
+                        yield content
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    last_usage = usage
+        finally:
+            self._log_prompt(messages, model or self.model, full_text)
+            # 记录 usage（取最后一个 chunk 中的 usage）
+            if last_usage is not None:
+                from types import SimpleNamespace
+
+                self._record_usage(
+                    SimpleNamespace(usage=last_usage),
+                    model or self.model,
+                    kwargs.get("chapter_id", ""),
+                )
+
     @retry(
         retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
         stop=stop_after_attempt(3),
@@ -307,12 +370,19 @@ class LLMBus:
         try:
             usage = getattr(response, "usage", None)
             if usage:
+                # 流式最后一个 chunk 的 usage 可能是 dict 或对象
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0) or 0
+                    completion_tokens = usage.get("completion_tokens", 0) or 0
+                else:
+                    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
                 self.metrics_store.record_token_usage(
                     agent=self.agent_name,
                     chapter_id=chapter_id,
                     model=model,
-                    prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                    completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
         except Exception as e:
             logger.debug("记录 token 使用量失败: %s", e)

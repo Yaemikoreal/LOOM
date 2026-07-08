@@ -257,3 +257,110 @@ class TestLLMBusAchatStream:
             temperature=0.2,
             stream=True,
         )
+
+
+# ── LLMBus.chat_stream 测试 ──
+
+
+class TestLLMBusChatStream:
+    """LLMBus.chat_stream 同步流式调用测试。"""
+
+    @patch("opennovel.core.llm.completion")
+    def test_chat_stream_yields_chunks(self, mock_completion: MagicMock) -> None:
+        """测试同步流式调用逐块返回内容。"""
+
+        class MockDelta:
+            def __init__(self, content: str | None) -> None:
+                self.content = content
+
+        class MockStreamChoice:
+            def __init__(self, content: str | None) -> None:
+                self.delta = MockDelta(content)
+
+        class MockStreamChunk:
+            def __init__(self, content: str | None, usage: dict | None = None) -> None:
+                self.choices = [MockStreamChoice(content)] if content is not None else []
+                self.usage = usage
+
+        def mock_stream():
+            yield MockStreamChunk("你好")
+            yield MockStreamChunk("世界")
+            yield MockStreamChunk(None, usage={"prompt_tokens": 5, "completion_tokens": 10})
+
+        mock_completion.return_value = mock_stream()
+        bus = LLMBus(model="gpt-4")
+
+        chunks = list(bus.chat_stream([{"role": "user", "content": "测试"}]))
+        assert chunks == ["你好", "世界"]
+
+    @patch("opennovel.core.llm.completion")
+    def test_chat_stream_records_usage(self, mock_completion: MagicMock) -> None:
+        """测试流式最后一个 chunk 的 usage 被正确记录。"""
+
+        class MockDelta:
+            def __init__(self, content: str | None) -> None:
+                self.content = content
+
+        class MockStreamChoice:
+            def __init__(self, content: str | None) -> None:
+                self.delta = MockDelta(content)
+
+        class MockStreamChunk:
+            def __init__(self, content: str | None, usage: dict | None = None) -> None:
+                self.choices = [MockStreamChoice(content)] if content is not None else []
+                self.usage = usage
+
+        def mock_stream():
+            yield MockStreamChunk("结果")
+            yield MockStreamChunk(None, usage={"prompt_tokens": 5, "completion_tokens": 10})
+
+        mock_completion.return_value = mock_stream()
+        mock_metrics = MagicMock()
+        bus = LLMBus(
+            model="gpt-4",
+            agent_name="writer",
+            metrics_store=mock_metrics,
+        )
+
+        list(bus.chat_stream([{"role": "user", "content": "测试"}], chapter_id="ch_001"))
+
+        mock_metrics.record_token_usage.assert_called_once_with(
+            agent="writer",
+            chapter_id="ch_001",
+            model="gpt-4",
+            prompt_tokens=5,
+            completion_tokens=10,
+        )
+
+    @patch("opennovel.core.llm.completion")
+    def test_chat_stream_passes_parameters(self, mock_completion: MagicMock) -> None:
+        """测试同步流式调用正确传递参数及 stream_options。"""
+
+        class MockStreamChunk:
+            def __init__(self) -> None:
+                self.choices = []
+                self.usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+        def mock_stream():
+            yield MockStreamChunk()
+
+        mock_completion.return_value = mock_stream()
+        bus = LLMBus(model="gpt-4")
+
+        list(
+            bus.chat_stream(
+                [{"role": "user", "content": "测试"}],
+                model="deepseek-chat",
+                max_tokens=100,
+                temperature=0.2,
+            )
+        )
+
+        mock_completion.assert_called_once_with(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": "测试"}],
+            max_tokens=100,
+            temperature=0.2,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
