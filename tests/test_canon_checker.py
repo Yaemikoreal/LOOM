@@ -8,6 +8,7 @@
 """
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,7 @@ from opennovel.core.canon_checker import (
     _check_negation_violation,
     _extract_core_concept,
     _extract_keywords,
+    audit_text_with_llm,
     check_text_against_canon,
 )
 from opennovel.core.safety_fence import SafetyFence, SafetyFenceConfig
@@ -627,3 +629,131 @@ class TestWithDemoCanon:
         # 至少应检测到"武器"相关违规
         weapon_violations = [v for v in violations if "武器" in v.detail]
         assert len(weapon_violations) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LLM 二次审计集成测试
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCanonCheckerAuditText:
+    """CanonChecker.audit_text 集成测试。"""
+
+    def test_audit_text_no_llm_bus_returns_empty(self, tmp_path: Path) -> None:
+        """无 LLMBus 时 audit_text 返回空结果。"""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "world.md").write_text("## 规则\n1. 船上没有武器\n", encoding="utf-8")
+
+        checker = CanonChecker()
+        result = checker.audit_text("他拿起武器", canon_dir)
+        assert result.canon_risk_score == 0.0
+        assert result.findings == []
+
+    def test_audit_text_uses_loaded_rules(self, tmp_path: Path) -> None:
+        """audit_text 使用已加载的规则缓存。"""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "world.md").write_text("## 规则\n1. 船上没有武器\n", encoding="utf-8")
+
+        checker = CanonChecker()
+        checker.load_rules(canon_dir)
+
+        class FakeLLMBus:
+            def __init__(self) -> None:
+                self.called = False
+                self.last_messages: list[dict[str, str]] = []
+
+            def chat(
+                self,
+                messages: list[dict[str, str]],
+                **kwargs: Any,
+            ) -> "MockLLMResponse":
+                self.called = True
+                self.last_messages = messages
+                return MockLLMResponse(
+                    '{"canon_risk_score": 0.8, "findings": ['
+                    '{"rule_concept": "船上武器", "detail": "违规", "severity": "high"}'
+                    "]}"
+                )
+
+        bus = FakeLLMBus()
+        result = checker.audit_text("他拿起武器", llm_bus=bus, chapter_id="ch_001")
+
+        assert bus.called
+        assert result.canon_risk_score == 0.8
+        assert len(result.findings) == 1
+        assert "船上没有武器" in bus.last_messages[1]["content"]
+
+    def test_audit_text_with_explicit_rules(self) -> None:
+        """audit_text 支持传入显式规则覆盖缓存。"""
+        checker = CanonChecker()
+        rules = [
+            CanonRule(
+                concept="魔法消耗",
+                constraint="魔法消耗寿命",
+                rule_type="positive",
+                keywords=["魔法", "寿命"],
+            ),
+        ]
+
+        class FakeLLMBus:
+            def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> "MockLLMResponse":
+                return MockLLMResponse('{"canon_risk_score": 0.0, "findings": []}')
+
+        result = checker.audit_text("他施展魔法", llm_bus=FakeLLMBus(), rules=rules)
+        assert result.canon_risk_score == 0.0
+
+
+class TestAuditTextWithLLM:
+    """audit_text_with_llm 便捷函数测试。"""
+
+    def test_no_llm_bus_returns_empty(self, tmp_path: Path) -> None:
+        """无 LLMBus 时便捷函数返回空结果。"""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "world.md").write_text("## 规则\n1. 船上没有武器\n", encoding="utf-8")
+
+        result = audit_text_with_llm("他拿起武器", canon_dir)
+        assert result.canon_risk_score == 0.0
+        assert result.findings == []
+
+    def test_with_llm_bus_calls_audit(self, tmp_path: Path) -> None:
+        """有 LLMBus 时执行审计。"""
+        canon_dir = tmp_path / "canon"
+        canon_dir.mkdir()
+        (canon_dir / "world.md").write_text("## 规则\n1. 船上没有武器\n", encoding="utf-8")
+
+        class FakeLLMBus:
+            def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> "MockLLMResponse":
+                return MockLLMResponse(
+                    '{"canon_risk_score": 0.7, "findings": ['
+                    '{"rule_concept": "船上武器", "detail": "违规", "severity": "medium"}'
+                    "]}"
+                )
+
+        result = audit_text_with_llm("他拿起武器", canon_dir, llm_bus=FakeLLMBus())
+        assert result.canon_risk_score == 0.7
+        assert len(result.findings) == 1
+
+
+# 测试辅助：模拟 LLM 响应对象
+class MockLLMResponse:
+    """模拟 LiteLLM 响应对象（属性访问）。"""
+
+    def __init__(self, content: str) -> None:
+        self.choices = [MockChoice(content)]
+
+
+class MockChoice:
+    """模拟 LLM 响应 choice。"""
+
+    def __init__(self, content: str) -> None:
+        self.message = MockMessage(content)
+
+
+class MockMessage:
+    """模拟 LLM 响应消息。"""
+
+    def __init__(self, content: str) -> None:
+        self.content = content

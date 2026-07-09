@@ -1,19 +1,23 @@
 """指标数据库存储适配层。
 
-独立于 EventStore（叙事真相），记录运行时遥测数据：
+已合并到 .novel.db（P0 架构简化）：
 - Token 消耗追踪
 - 评审历史
 - Agent 执行轨迹
+- State Cache
 
-数据库路径: .novel.metrics.db（与 .novel.db 分离）
+旧项目首次打开时，自动将 .novel.metrics.db 迁移到 .novel.db；
+迁移失败则静默降级，使用新的空表。
 
-详见 docs/adr/0004-independent-metrics-database.md。
+详见 docs/adr/0004-independent-metrics-database.md（已标记为 Superseded）。
 """
 
 import logging
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -34,11 +38,13 @@ class MetricsStore:
         """初始化指标存储。
 
         Args:
-            db_path: SQLite 数据库文件路径
+            db_path: SQLite 数据库文件路径。推荐 .novel.db。
         """
         self.db_path = db_path
         self._engine = create_engine(f"sqlite:///{db_path}", echo=False)
         self._create_tables()
+        # P0: 迁移旧 metrics 数据库到 .novel.db
+        self._maybe_migrate_legacy_metrics()
 
     def close(self) -> None:
         """关闭数据库引擎。"""
@@ -53,6 +59,99 @@ class MetricsStore:
     def _create_tables(self) -> None:
         """创建数据库表结构。"""
         SQLModel.metadata.create_all(self._engine)
+
+    def _maybe_migrate_legacy_metrics(self) -> None:
+        """迁移旧的 .novel.metrics.db 到当前 .novel.db。
+
+        仅当当前 db_path 是 .novel.db 且同级目录存在 .novel.metrics.db 时触发。
+        迁移成功后重命名旧数据库为 .novel.metrics.db.migrated。
+        迁移失败则静默降级，不阻塞用户。
+        """
+        if self.db_path.name != ".novel.db":
+            return
+
+        legacy_path = self.db_path.parent / ".novel.metrics.db"
+        if not legacy_path.exists():
+            return
+
+        try:
+            legacy_engine = create_engine(f"sqlite:///{legacy_path}", echo=False)
+            with Session(legacy_engine) as legacy_session:
+                token_usage = list(legacy_session.exec(select(TokenUsage)).all())
+                evaluations = list(legacy_session.exec(select(EvaluationHistory)).all())
+                traces = list(legacy_session.exec(select(AgentTrace)).all())
+                state_caches = list(legacy_session.exec(select(StateCacheEntry)).all())
+            legacy_engine.dispose()
+
+            def _copy_token_usage(record: TokenUsage) -> TokenUsage:
+                return TokenUsage(
+                    agent=record.agent,
+                    chapter_id=record.chapter_id,
+                    model=record.model,
+                    prompt_tokens=record.prompt_tokens,
+                    completion_tokens=record.completion_tokens,
+                    total_tokens=record.total_tokens,
+                    call_type=record.call_type,
+                    timestamp=record.timestamp,
+                )
+
+            def _copy_evaluation(record: EvaluationHistory) -> EvaluationHistory:
+                return EvaluationHistory(
+                    chapter_id=record.chapter_id,
+                    total_score=record.total_score,
+                    dimension_writing=record.dimension_writing,
+                    dimension_plot=record.dimension_plot,
+                    dimension_character=record.dimension_character,
+                    dimension_rhythm=record.dimension_rhythm,
+                    dimension_emotion=record.dimension_emotion,
+                    is_pass=record.is_pass,
+                    retry_count=record.retry_count,
+                    mode=record.mode,
+                    timestamp=record.timestamp,
+                )
+
+            def _copy_trace(record: AgentTrace) -> AgentTrace:
+                return AgentTrace(
+                    agent=record.agent,
+                    action=record.action,
+                    chapter_id=record.chapter_id,
+                    duration_ms=record.duration_ms,
+                    status=record.status,
+                    detail=record.detail,
+                    timestamp=record.timestamp,
+                )
+
+            def _copy_state_cache(record: StateCacheEntry) -> StateCacheEntry:
+                return StateCacheEntry(
+                    character_id=record.character_id,
+                    chapter_id=record.chapter_id,
+                    state_json=record.state_json,
+                    digest_text=record.digest_text,
+                    updated_at=record.updated_at,
+                )
+
+            with Session(self._engine) as session:
+                for record in token_usage:
+                    session.add(_copy_token_usage(record))
+                for record in evaluations:
+                    session.add(_copy_evaluation(record))
+                for record in traces:
+                    session.add(_copy_trace(record))
+                for record in state_caches:
+                    session.add(_copy_state_cache(record))
+                session.commit()
+
+            migrated_path = legacy_path.with_suffix(".db.migrated")
+            legacy_path.rename(migrated_path)
+            logger.info(
+                "已迁移旧 metrics 数据库: %d token, %d evaluation, %d trace, %d state_cache 记录",
+                len(token_usage),
+                len(evaluations),
+                len(traces),
+                len(state_caches),
+            )
+        except Exception as e:
+            logger.warning("迁移旧 metrics 数据库失败，已静默降级: %s", e)
 
     # ── Token 消耗 ──────────────────────────────────────────────────
 
@@ -374,3 +473,69 @@ class MetricsStore:
             if existing:
                 session.delete(existing)
                 session.commit()
+
+    def get_cost_report(
+        self,
+        model_prices: dict[str, dict[str, float]] | None = None,
+    ) -> dict[str, Any]:
+        """按 agent / model / call_type 汇总成本。
+
+        Args:
+            model_prices: 模型单价表，格式
+                {"model_name": {"prompt": 每 1k tokens 价格, "completion": 每 1k tokens 价格}}
+                未提供时使用内置默认价目表。
+
+        Returns:
+            成本报告字典，包含 lines（明细列表）和 total_cost。
+        """
+        # 默认单价表（美元/1k tokens），仅作估算
+        default_prices: dict[str, dict[str, float]] = {
+            "gpt-4": {"prompt": 0.03, "completion": 0.06},
+            "gpt-4o": {"prompt": 0.005, "completion": 0.015},
+            "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
+            "deepseek/deepseek-v4": {"prompt": 0.001, "completion": 0.002},
+            "deepseek/deepseek-v4-flash": {"prompt": 0.0005, "completion": 0.001},
+            "claude-3-5-sonnet-20240620": {"prompt": 0.003, "completion": 0.015},
+            "claude-3-haiku-20240307": {"prompt": 0.00025, "completion": 0.00125},
+        }
+        prices = model_prices or default_prices
+
+        with Session(self._engine) as session:
+            records = list(session.exec(select(TokenUsage)).all())
+
+        # 按 (agent, model, call_type) 分组
+        groups: dict[tuple[str, str, str], dict[str, int]] = {}
+        for r in records:
+            key = (r.agent, r.model, r.call_type)
+            if key not in groups:
+                groups[key] = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+            groups[key]["calls"] += 1
+            groups[key]["prompt_tokens"] += r.prompt_tokens
+            groups[key]["completion_tokens"] += r.completion_tokens
+
+        lines: list[dict[str, Any]] = []
+        total_cost = 0.0
+        for (agent, model, call_type), stats in sorted(groups.items()):
+            model_key = next((k for k in prices if k in model), None)
+            price = prices.get(model_key, {"prompt": 0.0, "completion": 0.0})
+            prompt_cost = stats["prompt_tokens"] * price["prompt"] / 1000
+            completion_cost = stats["completion_tokens"] * price["completion"] / 1000
+            cost = prompt_cost + completion_cost
+            total_cost += cost
+            lines.append(
+                {
+                    "agent": agent,
+                    "model": model,
+                    "call_type": call_type,
+                    "calls": stats["calls"],
+                    "prompt_tokens": stats["prompt_tokens"],
+                    "completion_tokens": stats["completion_tokens"],
+                    "cost": round(cost, 4),
+                }
+            )
+
+        return {
+            "lines": lines,
+            "total_cost": round(total_cost, 4),
+            "currency": "USD",
+        }

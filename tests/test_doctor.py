@@ -342,3 +342,75 @@ class TestEdgeCases:
         # 不应有 ledger_orphan 类型的诊断项
         ledger_items = [i for i in items if i.category == "ledger_orphan"]
         assert len(ledger_items) == 0
+
+
+class TestCausalDiagnosis:
+    """因果图诊断测试。"""
+
+    def test_diagnose_causal_no_db(self, tmp_path: Path) -> None:
+        """测试无事件账本时返回 INFO 提示。"""
+        doctor = Doctor(tmp_path)
+        items = doctor.diagnose_causal()
+        assert any(i.category == "causal_graph" for i in items)
+
+    def test_diagnose_causal_with_events(self, project_root: Path) -> None:
+        """测试有事件时返回因果图诊断项。"""
+        db_path = project_root / ".novel.db"
+        store = EventStore(db_path)
+        store.add_event(
+            EventCreate(
+                event_id="evt_001",
+                chapter_id="ch_001",
+                timestamp="第1天",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="起始事件",
+                causal_pressure=0.3,
+            )
+        )
+        store.add_event(
+            EventCreate(
+                event_id="evt_002",
+                chapter_id="ch_001",
+                timestamp="第1天",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="后续事件",
+                causal_pressure=0.9,
+                caused_by="evt_001",
+            )
+        )
+
+        doctor = Doctor(project_root)
+        items = doctor.diagnose_causal()
+
+        assert any(i.category == "causal_graph" for i in items)
+        assert any("规模" in i.message for i in items)
+
+    def test_diagnose_causal_caches_result(self, project_root: Path) -> None:
+        """测试 diagnose_causal 会生成缓存文件。"""
+        db_path = project_root / ".novel.db"
+        store = EventStore(db_path)
+        store.add_event(
+            EventCreate(
+                event_id="evt_001",
+                chapter_id="ch_001",
+                timestamp="第1天",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="事件",
+                causal_pressure=0.5,
+            )
+        )
+
+        doctor = Doctor(project_root)
+        doctor.diagnose_causal()
+
+        cache_path = project_root / ".novel.causal.cache.json"
+        assert cache_path.exists()
+
+    def test_dashboard_includes_causal_panel(self, project_root: Path) -> None:
+        """测试 generate_dashboard 包含 causal 面板。"""
+        doctor = Doctor(project_root)
+        dashboard = doctor.generate_dashboard()
+        assert "causal" in dashboard

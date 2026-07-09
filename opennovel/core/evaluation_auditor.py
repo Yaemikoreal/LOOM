@@ -44,7 +44,7 @@ class EvaluationAuditor:
         Returns:
             EvaluationAuditor 实例，或无数据时返回 None
         """
-        metrics_path = project_root / ".novel.metrics.db"
+        metrics_path = project_root / ".novel.db"
         if not metrics_path.exists():
             return None
         try:
@@ -61,7 +61,12 @@ class EvaluationAuditor:
         """
         history = self._metrics.get_evaluation_history()
         if not history:
-            return {"total_evaluations": 0, "dimensions": {}, "alerts": [], "message": "暂无评分数据"}
+            return {
+                "total_evaluations": 0,
+                "dimensions": {},
+                "alerts": [],
+                "message": "暂无评分数据",
+            }
 
         dims: dict[str, list[int]] = {
             "文笔质量": [],
@@ -87,9 +92,7 @@ class EvaluationAuditor:
 
         report: dict = {
             "total_evaluations": len(history),
-            "total_score_avg": round(
-                sum(r.total_score for r in history) / len(history), 1
-            ),
+            "total_score_avg": round(sum(r.total_score for r in history) / len(history), 1),
             "dimensions": {},
             "alerts": [],
         }
@@ -109,8 +112,7 @@ class EvaluationAuditor:
             # 检测异常
             if stats_data["std"] > 2.0:
                 report["alerts"].append(
-                    f"{name} 标准差 {stats_data['std']} 偏高（>2.0），"
-                    "可能存在评分漂移"
+                    f"{name} 标准差 {stats_data['std']} 偏高（>2.0），可能存在评分漂移"
                 )
 
         # 检测整体趋势
@@ -130,8 +132,7 @@ class EvaluationAuditor:
             score_std = statistics.stdev(scores)
             if score_std < 3.0:
                 report["alerts"].append(
-                    f"评分标准差 {score_std:.2f} 偏低（<3.0），"
-                    "所有章节评分过于集中，可能缺乏区分度"
+                    f"评分标准差 {score_std:.2f} 偏低（<3.0），所有章节评分过于集中，可能缺乏区分度"
                 )
 
         return report

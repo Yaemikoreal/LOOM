@@ -47,7 +47,10 @@ def stash(
 
         fts5 = Fts5Store(project_root)
         fts5.incremental_update_text(
-            text, "subconscious", "stash", {"tags": tags},
+            text,
+            "subconscious",
+            "stash",
+            {"tags": tags},
         )
     except Exception as e:
         rprint(f"  [yellow]搜索索引更新失败: {e}[/yellow]")

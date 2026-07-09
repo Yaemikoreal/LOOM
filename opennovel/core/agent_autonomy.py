@@ -1,6 +1,6 @@
 """Agent 自治引擎 — Mid-Write 工具调用循环。
 
-基于 ADR 0006 Agent Autonomy（Agent 自治）设计：
+基于 ADR 0010 Agent Autonomy（Agent 自治）设计：
 Writer 在创作过程中可主动挂起并调用 ToolRegistry 查询缺失设定，
 而非仅在 think→write 之间做静态知识缺口检测。
 
@@ -192,10 +192,7 @@ class ToolCallParser:
 
         # 提取 query（从 args 中取，兼容 string 和 dict 两种格式）
         query = ""
-        if isinstance(args, dict):
-            query = str(args.get("query", "")).strip()
-        else:
-            query = str(args).strip()
+        query = str(args.get("query", "")).strip() if isinstance(args, dict) else str(args).strip()
 
         # 验证工具名
         if tool_name not in _VALID_TOOLS:
@@ -319,11 +316,7 @@ class ToolCallExecutor:
             concept=request.query,
             source=source,
             context=request.reason,
-            character_id=(
-                request.query
-                if re.match(r"^char_\d+$", request.query)
-                else ""
-            ),
+            character_id=(request.query if re.match(r"^char_\d+$", request.query) else ""),
         )
 
         # 调用 execute()（带权限检查和重试），而非直接 fulfill()
@@ -713,11 +706,13 @@ class AutonomousWriteLoop:
                 # 解析原生工具调用
                 request = parser.parse_native(tc_name, tc_args)
                 if request is None:
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": f"未知工具或参数无效: {tc_name}",
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": f"未知工具或参数无效: {tc_name}",
+                        }
+                    )
                     continue
 
                 # 全局调用计数
@@ -749,11 +744,13 @@ class AutonomousWriteLoop:
                     result_content = f"[检索失败: {e}]"
 
                 # 注入 tool_result
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": result_content,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": result_content,
+                    }
+                )
 
             # 保存正文（如果有）
             if text.strip():
@@ -782,3 +779,7 @@ class AutonomousWriteLoop:
         if request.raw_text and request.raw_text in text:
             return text.replace(request.raw_text, "").strip()
         return text.strip()
+
+
+# ── ADR 0010 兼容别名 ──
+AgentAutonomy = AutonomousWriteLoop

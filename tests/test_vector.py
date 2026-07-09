@@ -295,7 +295,7 @@ class TestEnsureIndex:
         src_dir = tmp_path / "docs"
         src_dir.mkdir()
 
-        result = store.ensure_index(src_dir)
+        store.ensure_index(src_dir)
         store.build_index.assert_called_once_with(src_dir)  # type: ignore[attr-defined]
 
     @patch("opennovel.storage.vector.VectorStore.load_index")

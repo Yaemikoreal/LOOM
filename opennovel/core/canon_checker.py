@@ -1,6 +1,6 @@
 """世界观规则校验器 — Canon 不可违背检查。
 
-基于 ADR 0006 安全围栏设计中的"Canon 不可违背"原则，
+基于 ADR 0010 安全围栏设计中的"Canon 不可违背"原则，
 从 canon/ 目录中的 Markdown 文件提取世界观规则，
 对 Agent 生成的文本进行轻量级规则违反检测。
 
@@ -15,10 +15,17 @@
 依赖: 无（纯 Python 标准库实现，关键词匹配，不依赖 LLM）
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from opennovel.core.canon_auditor import CanonAuditResult
+    from opennovel.core.llm import LLMBus
 
 logger = logging.getLogger(__name__)
 
@@ -637,10 +644,9 @@ class CanonChecker:
         for bullet in all_bullets:
             bullet = bullet.strip()
             # 只提取包含约束性词汇且不重复的陈述
-            if (
-                any(w in bullet for w in ["不能", "没有", "只能", "必须", "禁止", "不得"])
-                and not any(r.raw_text == bullet for r in rules)
-            ):
+            if any(
+                w in bullet for w in ["不能", "没有", "只能", "必须", "禁止", "不得"]
+            ) and not any(r.raw_text == bullet for r in rules):
                 rule = self._create_rule(bullet, source_file)
                 if rule:
                     rules.append(rule)
@@ -761,10 +767,12 @@ class CanonChecker:
             True 表示存在豁免标记
         """
         pattern = re.escape(rule_concept)
-        return bool(re.search(
-            rf"<!-- canon_exempt:\s*{pattern}\s*-->",
-            text,
-        ))
+        return bool(
+            re.search(
+                rf"<!-- canon_exempt:\s*{pattern}\s*-->",
+                text,
+            )
+        )
 
     def check_text_with_exemptions(
         self,
@@ -804,6 +812,37 @@ class CanonChecker:
 
         return filtered
 
+    def audit_text(
+        self,
+        text: str,
+        llm_bus: LLMBus | None = None,
+        rules: list[CanonRule] | None = None,
+        chapter_id: str = "",
+    ) -> CanonAuditResult:
+        """对文本执行 LLM 二次 Canon 审计（只标记不阻断）。
+
+        使用 LLMCanonAuditor 检测复杂语义、隐喻、例外场景的潜在违规。
+        当 LLMBus 不可用时，返回空结果。
+
+        Args:
+            text: 待审计文本
+            llm_bus: LLM 调用总线（可选）
+            rules: 规则列表（为 None 时使用实例缓存的规则，若缓存为空则返回空结果）
+            chapter_id: 章节 ID，用于追踪
+
+        Returns:
+            CanonAuditResult
+        """
+        from opennovel.core.canon_auditor import LLMCanonAuditor
+
+        effective_rules = rules
+        if effective_rules is None:
+            # 尝试从缓存中获取当前已加载的规则（仅取第一个缓存值）
+            effective_rules = next(iter(self._rules_cache.values())) if self._rules_cache else []
+
+        auditor = LLMCanonAuditor(llm_bus=llm_bus, rules=effective_rules)
+        return auditor.audit_text(text, chapter_id=chapter_id)
+
 
 # ── 便捷函数 ─────────────────────────────────────────────────────────────
 
@@ -827,3 +866,35 @@ def check_text_against_canon(
         checker = CanonChecker()
     rules = checker.load_rules(canon_dir)
     return checker.check_text(text, rules)
+
+
+def audit_text_with_llm(
+    text: str,
+    canon_dir: Path,
+    llm_bus: LLMBus | None = None,
+    checker: CanonChecker | None = None,
+    chapter_id: str = "",
+) -> CanonAuditResult:
+    """便捷函数：一键对文本执行 LLM 二次 Canon 审计。
+
+    先从 canon 目录加载规则，再调用 LLM 进行复杂语义审计。
+    LLMBus 不可用时返回空结果。
+
+    Args:
+        text: 待审计文本
+        canon_dir: canon 设定目录
+        llm_bus: LLM 调用总线（可选）
+        checker: 可复用的 CanonChecker 实例
+        chapter_id: 章节 ID
+
+    Returns:
+        CanonAuditResult
+    """
+    from opennovel.core.canon_auditor import CanonAuditResult
+
+    if checker is None:
+        checker = CanonChecker()
+    rules = checker.load_rules(canon_dir)
+    if llm_bus is None:
+        return CanonAuditResult()
+    return checker.audit_text(text, llm_bus=llm_bus, rules=rules, chapter_id=chapter_id)

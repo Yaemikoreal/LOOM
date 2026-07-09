@@ -10,8 +10,6 @@
 
 from pathlib import Path
 
-import pytest
-
 from opennovel.schemas.foreshadowing import (
     ForeshadowItem,
     ForeshadowState,
@@ -87,15 +85,17 @@ class TestForeshadowStore:
 
     def test_merge_new_items(self, tmp_path: Path) -> None:
         store = ForeshadowStore(tmp_path)
-        current = ForeshadowState(items=[
-            ForeshadowItem(
-                foreshadow_id="F001",
-                type=ForeshadowType.PLOT,
-                description="已有伏笔",
-                buried_chapter="ch_001",
-                status=ForeshadowStatus.BURIED,
-            ),
-        ])
+        current = ForeshadowState(
+            items=[
+                ForeshadowItem(
+                    foreshadow_id="F001",
+                    type=ForeshadowType.PLOT,
+                    description="已有伏笔",
+                    buried_chapter="ch_001",
+                    status=ForeshadowStatus.BURIED,
+                ),
+            ]
+        )
         new_items = [
             ForeshadowItem(
                 foreshadow_id="F002",
@@ -113,15 +113,17 @@ class TestForeshadowStore:
 
     def test_merge_update_existing(self, tmp_path: Path) -> None:
         store = ForeshadowStore(tmp_path)
-        current = ForeshadowState(items=[
-            ForeshadowItem(
-                foreshadow_id="F001",
-                type=ForeshadowType.PLOT,
-                description="已有伏笔",
-                buried_chapter="ch_001",
-                status=ForeshadowStatus.BURIED,
-            ),
-        ])
+        current = ForeshadowState(
+            items=[
+                ForeshadowItem(
+                    foreshadow_id="F001",
+                    type=ForeshadowType.PLOT,
+                    description="已有伏笔",
+                    buried_chapter="ch_001",
+                    status=ForeshadowStatus.BURIED,
+                ),
+            ]
+        )
         updated = [
             ForeshadowItem(
                 foreshadow_id="F001",
@@ -138,18 +140,20 @@ class TestForeshadowStore:
 
     def test_roundtrip_preserves_fields(self, tmp_path: Path) -> None:
         store = ForeshadowStore(tmp_path)
-        original = ForeshadowState(items=[
-            ForeshadowItem(
-                foreshadow_id="F001",
-                type=ForeshadowType.THEME,
-                description="主题伏笔",
-                buried_chapter="ch_001",
-                status=ForeshadowStatus.CLOSED,
-                related_character_ids=["char_001"],
-                expected_close_chapter="ch_005",
-                notes="已收束",
-            ),
-        ])
+        original = ForeshadowState(
+            items=[
+                ForeshadowItem(
+                    foreshadow_id="F001",
+                    type=ForeshadowType.THEME,
+                    description="主题伏笔",
+                    buried_chapter="ch_001",
+                    status=ForeshadowStatus.CLOSED,
+                    related_character_ids=["char_001"],
+                    expected_close_chapter="ch_005",
+                    notes="已收束",
+                ),
+            ]
+        )
         store.save(original)
         loaded = store.load()
         item = loaded.items[0]
@@ -270,13 +274,15 @@ class TestForeshadowStoreFile:
 
     def test_atomic_write(self, tmp_path: Path) -> None:
         store = ForeshadowStore(tmp_path)
-        items = [ForeshadowItem(
-            foreshadow_id="F001",
-            type=ForeshadowType.PLOT,
-            description="测试",
-            buried_chapter="ch_001",
-            status=ForeshadowStatus.BURIED,
-        )]
+        items = [
+            ForeshadowItem(
+                foreshadow_id="F001",
+                type=ForeshadowType.PLOT,
+                description="测试",
+                buried_chapter="ch_001",
+                status=ForeshadowStatus.BURIED,
+            )
+        ]
         store.save(ForeshadowState(items=items))
         assert store.file_path.exists()
         # 无 tmp 残留
@@ -286,13 +292,15 @@ class TestForeshadowStoreFile:
         """测试深路径自动创建目录。"""
         deep_path = tmp_path / "a" / "b" / "c"
         store = ForeshadowStore(deep_path)
-        items = [ForeshadowItem(
-            foreshadow_id="F001",
-            type=ForeshadowType.PLOT,
-            description="测试",
-            buried_chapter="ch_001",
-            status=ForeshadowStatus.BURIED,
-        )]
+        items = [
+            ForeshadowItem(
+                foreshadow_id="F001",
+                type=ForeshadowType.PLOT,
+                description="测试",
+                buried_chapter="ch_001",
+                status=ForeshadowStatus.BURIED,
+            )
+        ]
         store.save(ForeshadowState(items=items))
         assert store.file_path.exists()
         assert store.file_path.read_text(encoding="utf-8") != ""

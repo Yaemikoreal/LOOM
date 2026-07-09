@@ -66,12 +66,8 @@ def generate_timeline(project_root: Path, event_store: EventStore | None = None)
 
         # 事件总表
         lines.append("## 事件总表\n")
-        lines.append(
-            "| 章节 | 时间戳 | 事件 | 角色 | 类型 | 因果压强 | 前置事件 |"
-        )
-        lines.append(
-            "|------|--------|------|------|------|----------|----------|"
-        )
+        lines.append("| 章节 | 时间戳 | 事件 | 角色 | 类型 | 因果压强 | 前置事件 |")
+        lines.append("|------|--------|------|------|------|----------|----------|")
 
         for e in all_events:
             desc = e.description[:60] + "..." if len(e.description) > 60 else e.description

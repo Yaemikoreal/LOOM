@@ -10,7 +10,9 @@ from opennovel.agents.critic import Critic
 from opennovel.agents.manager import Manager
 from opennovel.agents.writer import Writer
 from opennovel.core.auto_runner import AutoRunner, ChapterResult
+from opennovel.core.canon_auditor import CanonAuditResult, LLMCanonFinding
 from opennovel.core.config import LoomConfig
+from opennovel.core.safety_fence import SafetyFenceConfig
 from opennovel.schemas.evaluation import ChapterEvaluation, DimensionScore
 from opennovel.schemas.manager_update import ManagerUpdateResult
 from opennovel.schemas.outline import ChapterOutline, SceneBreakdown
@@ -529,6 +531,130 @@ class TestRunChapter:
         # Manager 失败不应中断流程，摘要为空
         assert result.manager_summary == ""
         assert result.evaluation.total_score == 85
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_run_chapter_canon_audit_disabled_by_default(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+        default_config: LoomConfig,
+    ) -> None:
+        """默认配置不启用 LLM Canon 审计。"""
+        runner = AutoRunner(project_root=empty_project_root, config=default_config)
+
+        runner.writer = MagicMock(spec=Writer)
+        runner.writer.think.return_value = make_outline()
+        runner.writer.write.return_value = "# 第一章\n\n正文。"
+
+        runner.critic = MagicMock(spec=Critic)
+        runner.critic.evaluate.return_value = make_evaluation(85)
+
+        runner.manager = MagicMock(spec=Manager)
+        runner.manager.update.return_value = make_manager_result()
+
+        result = runner.run_chapter("ch_001", "四人相遇")
+
+        assert runner._canon_auditor is None
+        assert result.canon_audit.canon_risk_score == 0.0
+        assert result.canon_audit.findings == []
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_run_chapter_canon_audit_enabled_records_result(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+    ) -> None:
+        """启用 LLM Canon 审计时记录审计结果到 ChapterResult。"""
+        config = LoomConfig(
+            model="test-model",
+            api_base="http://localhost:8080",
+            api_key="test-key",
+            safety_fence=SafetyFenceConfig(
+                enabled=False,
+                llm_canon_audit_enabled=True,
+            ),
+        )
+        runner = AutoRunner(project_root=empty_project_root, config=config)
+
+        runner.writer = MagicMock(spec=Writer)
+        runner.writer.think.return_value = make_outline()
+        runner.writer.write.return_value = "# 第一章\n\n正文。"
+
+        runner.critic = MagicMock(spec=Critic)
+        runner.critic.evaluate.return_value = make_evaluation(85)
+
+        runner.manager = MagicMock(spec=Manager)
+        runner.manager.update.return_value = make_manager_result()
+
+        # 模拟 auditor 返回风险结果
+        audit_result = CanonAuditResult(
+            canon_risk_score=0.6,
+            findings=[
+                LLMCanonFinding(
+                    rule_concept="船上武器",
+                    detail="文本可能暗示武器存在",
+                    severity="medium",
+                    snippet="正文",
+                )
+            ],
+        )
+        runner._canon_auditor = MagicMock()
+        runner._canon_auditor.audit_text.return_value = audit_result
+
+        result = runner.run_chapter("ch_001", "四人相遇")
+
+        runner._canon_auditor.audit_text.assert_called_once()
+        assert result.canon_audit.canon_risk_score == 0.6
+        assert len(result.canon_audit.findings) == 1
+        assert result.canon_audit.findings[0].rule_concept == "船上武器"
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_run_chapter_canon_audit_failure_non_blocking(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+    ) -> None:
+        """LLM Canon 审计失败不阻断流水线。"""
+        config = LoomConfig(
+            model="test-model",
+            api_base="http://localhost:8080",
+            api_key="test-key",
+            safety_fence=SafetyFenceConfig(
+                enabled=False,
+                llm_canon_audit_enabled=True,
+            ),
+        )
+        runner = AutoRunner(project_root=empty_project_root, config=config)
+
+        runner.writer = MagicMock(spec=Writer)
+        runner.writer.think.return_value = make_outline()
+        runner.writer.write.return_value = "# 第一章\n\n正文。"
+
+        runner.critic = MagicMock(spec=Critic)
+        runner.critic.evaluate.return_value = make_evaluation(85)
+
+        runner.manager = MagicMock(spec=Manager)
+        runner.manager.update.return_value = make_manager_result()
+
+        runner._canon_auditor = MagicMock()
+        runner._canon_auditor.audit_text.side_effect = RuntimeError("审计失败")
+
+        result = runner.run_chapter("ch_001", "四人相遇")
+
+        assert result.canon_audit.canon_risk_score == 0.0
+        assert result.canon_audit.findings == []
 
 
 # ── 不合格重试测试 ──

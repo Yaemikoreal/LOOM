@@ -11,8 +11,10 @@
 """
 
 import logging
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from opennovel.schemas.knowledge import KnowledgeNeed, KnowledgeResult, KnowledgeSource
 
@@ -57,6 +59,7 @@ class ToolRegistry:
             KnowledgeSource.SUBCONSCIOUS: self._query_subconscious,
             KnowledgeSource.CHARACTER: self._query_character,
             KnowledgeSource.EVENT: self._query_event,
+            KnowledgeSource.CAUSAL_CHAIN: self._query_causal_chain,
         }
 
     # ── 公开接口 ─────────────────────────────────────────────────────────
@@ -87,7 +90,8 @@ class ToolRegistry:
             if not safety_fence.check_tool_permission(agent, tool_name):
                 logger.warning(
                     "Agent '%s' 无权调用工具 '%s'，已拒绝",
-                    agent, tool_name,
+                    agent,
+                    tool_name,
                 )
                 return KnowledgeResult(
                     content=f"[权限拒绝] Agent '{agent}' 无权限调用 '{tool_name}'",
@@ -160,7 +164,7 @@ class ToolRegistry:
     ) -> KnowledgeResult:
         """带重试和降级的 handler 执行包装。
 
-        策略：重试(max_retries次) → 全部失败 → 降级返回空结果
+        策略：重试(max_retries次，指数退避) → 全部失败 → 降级返回空结果
 
         Args:
             need: 知识需求
@@ -177,17 +181,25 @@ class ToolRegistry:
             except Exception as e:
                 last_error = str(e)
                 if attempt < max_retries - 1:
+                    backoff = 0.5 * (2**attempt)
                     logger.warning(
-                        "工具 %s 执行失败 (尝试 %d/%d): %s",
-                        need.source.value, attempt + 1, max_retries, e,
+                        "工具 %s 执行失败 (尝试 %d/%d): %s，%.1fs 后重试",
+                        need.source.value,
+                        attempt + 1,
+                        max_retries,
+                        e,
+                        backoff,
                     )
+                    time.sleep(backoff)
                 else:
                     logger.error(
                         "工具 %s 执行失败 %d 次，已降级: %s",
-                        need.source.value, max_retries, e,
+                        need.source.value,
+                        max_retries,
+                        e,
                     )
 
-        # 全部失败：降级返回空结果
+        # 全部失败：降级返回空结果，并在内容中标注“检索失败”
         return KnowledgeResult(
             content=f"[检索失败: {last_error[:200]}]",
             source=need.source,
@@ -210,13 +222,17 @@ class ToolRegistry:
             KnowledgeSource.SUBCONSCIOUS: "query_subconscious",
             KnowledgeSource.CHARACTER: "query_character",
             KnowledgeSource.EVENT: "query_event",
+            KnowledgeSource.CAUSAL_CHAIN: "query_causal_chain",
         }
         return mapping.get(need.source, "unknown")
 
     # ── 工具实现 ─────────────────────────────────────────────────────────
 
     def _query_through_pipeline(
-        self, need: KnowledgeNeed, source: KnowledgeSource, retriever_method: str,
+        self,
+        need: KnowledgeNeed,
+        source: KnowledgeSource,
+        retriever_method: str,
         not_found_msg: str,
     ) -> KnowledgeResult | None:
         """通过 SearchPipeline 查询（共享方法），返回 None 时走 fallback。
@@ -253,13 +269,19 @@ class ToolRegistry:
         # 旧路径 fallback
         if self._retriever is None:
             return KnowledgeResult(
-                content="", source=source, concept=need.concept, relevance=0.0,
+                content="",
+                source=source,
+                concept=need.concept,
+                relevance=0.0,
             )
         query = f"{need.concept} {need.context}".strip()[:500]
         retriever_fn = getattr(self._retriever, retriever_method, None)
         if retriever_fn is None:
             return KnowledgeResult(
-                content="", source=source, concept=need.concept, relevance=0.0,
+                content="",
+                source=source,
+                concept=need.concept,
+                relevance=0.0,
             )
         content = retriever_fn(query, top_k=2)
         return KnowledgeResult(
@@ -272,13 +294,19 @@ class ToolRegistry:
     def _query_canon(self, need: KnowledgeNeed) -> KnowledgeResult:
         """查询世界观设定文档。"""
         return self._query_through_pipeline(
-            need, KnowledgeSource.CANON, "query_canon", "未找到相关设定",
+            need,
+            KnowledgeSource.CANON,
+            "query_canon",
+            "未找到相关设定",
         )
 
     def _query_subconscious(self, need: KnowledgeNeed) -> KnowledgeResult:
         """查询灵感潜意识池。"""
         return self._query_through_pipeline(
-            need, KnowledgeSource.SUBCONSCIOUS, "query_subconscious", "未找到相关灵感",
+            need,
+            KnowledgeSource.SUBCONSCIOUS,
+            "query_subconscious",
+            "未找到相关灵感",
         )
 
     def _query_character(self, need: KnowledgeNeed) -> KnowledgeResult:
@@ -319,9 +347,11 @@ class ToolRegistry:
             physical = fm_dict.get("physical", {})
             emotional = fm_dict.get("emotional", {})
             injuries = physical.get("injuries", []) if isinstance(physical, dict) else []
-            emotions_str = ", ".join(
-                f"{k}={v}" for k, v in emotional.items() if v and float(v) > 0
-            ) if isinstance(emotional, dict) else ""
+            emotions_str = (
+                ", ".join(f"{k}={v}" for k, v in emotional.items() if v and float(v) > 0)
+                if isinstance(emotional, dict)
+                else ""
+            )
             name = fm_dict.get("name") or fm.name if hasattr(fm, "name") else char_id
             location = fm_dict.get("location") or (
                 fm.location if hasattr(fm, "location") else "未知"
@@ -377,8 +407,7 @@ class ToolRegistry:
             else:
                 high_events = self._event_store.get_high_pressure_events(threshold=0.5)
                 lines = [
-                    f"[{e.chapter_id}] {e.event_type}: {e.description}"
-                    for e in high_events[-5:]
+                    f"[{e.chapter_id}] {e.event_type}: {e.description}" for e in high_events[-5:]
                 ]
                 content = "\n".join(lines) if lines else "无高压力事件"
 
@@ -393,6 +422,49 @@ class ToolRegistry:
             return KnowledgeResult(
                 content=f"事件查询失败: {e}",
                 source=KnowledgeSource.EVENT,
+                concept=need.concept,
+                relevance=0.0,
+            )
+
+    def _query_causal_chain(self, need: KnowledgeNeed) -> KnowledgeResult:
+        """查询事件因果链（SQL 递归追溯）。
+
+        Args:
+            need: 知识需求（concept 应为 event_id）
+
+        Returns:
+            查询结果
+        """
+        if self._event_store is None:
+            return KnowledgeResult(
+                content="",
+                source=KnowledgeSource.CAUSAL_CHAIN,
+                concept=need.concept,
+                relevance=0.0,
+            )
+        try:
+            event_id = need.concept
+            chain = self._event_store.get_causal_chain(event_id)
+            if chain:
+                lines = [
+                    f"[{e.chapter_id}] {e.event_type}: {e.description} (压强={e.causal_pressure})"
+                    for e in chain
+                ]
+                content = "\n".join(lines)
+            else:
+                content = f"事件 {event_id} 无因果前置链"
+
+            return KnowledgeResult(
+                content=content,
+                source=KnowledgeSource.CAUSAL_CHAIN,
+                concept=need.concept,
+                relevance=1.0,
+            )
+        except Exception as e:
+            logger.warning("因果链查询失败: %s", e)
+            return KnowledgeResult(
+                content=f"因果链查询失败: {e}",
+                source=KnowledgeSource.CAUSAL_CHAIN,
                 concept=need.concept,
                 relevance=0.0,
             )

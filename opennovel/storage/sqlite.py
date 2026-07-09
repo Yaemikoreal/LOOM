@@ -286,9 +286,7 @@ class EventStore:
 
     # ── 因果链 DAG 查询 (Phase 2.1) ──────────────────────────────────
 
-    def get_causal_chain(
-        self, event_id: str, max_depth: int = 10
-    ) -> list[EventLog]:
+    def get_causal_chain(self, event_id: str, max_depth: int = 10) -> list[EventLog]:
         """沿 caused_by 边向上追溯因果链。
 
         从指定事件出发，递归查找其前置因果事件，直到链顶或达到最大深度。
@@ -317,9 +315,7 @@ class EventStore:
         chain.reverse()
         return chain
 
-    def get_causal_descendants(
-        self, event_id: str, max_depth: int = 10
-    ) -> list[EventLog]:
+    def get_causal_descendants(self, event_id: str, max_depth: int = 10) -> list[EventLog]:
         """沿 caused_by 边向下查找因果后继。
 
         从指定事件出发，查找所有以它为 caused_by 的后续事件，

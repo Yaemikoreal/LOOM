@@ -33,9 +33,7 @@ class StructuralTemplate(BaseModel):
     dimension: MutationDimension = Field(description="所属变异维度")
     name: str = Field(description="模板名称，如 '非线性三幕剧'")
     description: str = Field(description="模板描述")
-    prompt_hint: str = Field(
-        description="注入 Writer Prompt 的变异指令，指导 LLM 按此结构创作"
-    )
+    prompt_hint: str = Field(description="注入 Writer Prompt 的变异指令，指导 LLM 按此结构创作")
 
 
 class MutationPlan(BaseModel):
@@ -44,12 +42,8 @@ class MutationPlan(BaseModel):
     包含选定的维度、模板和变异强度。
     """
 
-    dimensions: list[MutationDimension] = Field(
-        description="选定的变异维度（1-2 个）"
-    )
-    templates: list[StructuralTemplate] = Field(
-        description="对应的结构模板"
-    )
+    dimensions: list[MutationDimension] = Field(description="选定的变异维度（1-2 个）")
+    templates: list[StructuralTemplate] = Field(description="对应的结构模板")
     intensity: float = Field(
         default=0.5,
         ge=0.0,
@@ -86,8 +80,7 @@ TEMPLATES: dict[str, StructuralTemplate] = {
         name="平行叙事",
         description="多条故事线交替推进，最终交汇",
         prompt_hint=(
-            "请使用平行叙事结构：同时推进 2-3 条故事线，"
-            "交替切换视角，让它们在关键时刻交汇。"
+            "请使用平行叙事结构：同时推进 2-3 条故事线，交替切换视角，让它们在关键时刻交汇。"
         ),
     ),
     "frame_narrative": StructuralTemplate(

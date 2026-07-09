@@ -14,10 +14,11 @@
 import asyncio
 import json
 import logging
-import sys
 from pathlib import Path
 
 from mcp import types
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
 
 from opennovel.agents.critic import Critic
 from opennovel.agents.writer import Writer
@@ -26,8 +27,6 @@ from opennovel.core.config import LoomConfig
 from opennovel.core.llm import LLMBus
 from opennovel.core.retriever import Retriever
 from opennovel.storage.yaml_storage import YAMLStorage
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
 
 logger = logging.getLogger(__name__)
 
@@ -401,11 +400,11 @@ async def _handle_get_status(args: dict) -> str:
     if outline_path.exists():
         content = outline_path.read_text(encoding="utf-8")
         chapter_count = sum(1 for line in content.split("\n") if line.startswith("## "))
-        sections.append(f"\n## 大纲")
+        sections.append("\n## 大纲")
         sections.append(f"- 文件: {config.outline}")
         sections.append(f"- 章节数: {chapter_count}")
     else:
-        sections.append(f"\n## 大纲")
+        sections.append("\n## 大纲")
         sections.append(f"- 未创建 ({config.outline})")
 
     return "\n".join(sections)
@@ -437,9 +436,7 @@ async def _handle_write_chapter(args: dict) -> str:
             retriever.build_canon_index()
     else:
         retriever._canon_store.load_index()
-    if not (index_dir / "subconscious").exists() or not any(
-        (index_dir / "subconscious").iterdir()
-    ):
+    if not (index_dir / "subconscious").exists() or not any((index_dir / "subconscious").iterdir()):
         sub_dir = path / "subconscious"
         if sub_dir.exists() and any(sub_dir.glob("*.md")):
             retriever.build_subconscious_index()
@@ -457,7 +454,6 @@ async def _handle_write_chapter(args: dict) -> str:
 
     # 获取前一章摘要（简单实现）
     storage = YAMLStorage()
-    previous_summary = ""
     previous_text = ""
 
     # Writer 思考
@@ -573,29 +569,47 @@ async def _handle_commit(args: dict) -> str:
         api_base=config.api_base,
         api_key=config.api_key,
     )
-    auditor = Auditor(llm_bus=llm_bus, state_manager=manager, project_root=path, yaml_storage=storage)
+    auditor = Auditor(
+        llm_bus=llm_bus,
+        state_manager=manager,
+        project_root=path,
+        yaml_storage=storage,
+    )
 
     try:
         result = auditor.extract_events_with_retry(chapter_id, body, active_chars)
     except Exception as e:
-        return json.dumps({"status": "error", "message": f"Auditor 提取失败: {e}"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "error", "message": f"Auditor 提取失败: {e}"},
+            ensure_ascii=False,
+        )
 
     if result.dirty:
-        return json.dumps({"status": "dirty", "message": "脏提交：Auditor 提取失败"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "dirty", "message": "脏提交：Auditor 提取失败"},
+            ensure_ascii=False,
+        )
 
     if not result.events:
-        return json.dumps({"status": "no_events", "message": "未检测到状态变更事件"}, ensure_ascii=False)
+        return json.dumps(
+            {"status": "no_events", "message": "未检测到状态变更事件"},
+            ensure_ascii=False,
+        )
 
     # 写入固化
     event_ids = auditor.apply_confirmed_events(result.events, chapter_id)
     manager.update_snapshot_after(snapshot.snapshot_id, affected_files, event_ids)
 
-    return json.dumps({
-        "status": "success",
-        "events_committed": len(event_ids),
-        "chapter_id": chapter_id,
-        "event_ids": event_ids,
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "status": "success",
+            "events_committed": len(event_ids),
+            "chapter_id": chapter_id,
+            "event_ids": event_ids,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 async def _handle_stash(args: dict) -> str:
@@ -608,8 +622,9 @@ async def _handle_stash(args: dict) -> str:
         return "错误: 必须提供 content"
 
     try:
-        from opennovel.storage.yaml_storage import YAMLStorage
         from datetime import datetime
+
+        from opennovel.storage.yaml_storage import YAMLStorage
 
         storage = YAMLStorage()
         sub_dir = path / "subconscious"
@@ -631,11 +646,14 @@ async def _handle_stash(args: dict) -> str:
         except Exception:
             pass
 
-        return json.dumps({
-            "status": "success",
-            "file": str(line_path),
-            "length": len(content),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "success",
+                "file": str(line_path),
+                "length": len(content),
+            },
+            ensure_ascii=False,
+        )
 
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
@@ -660,18 +678,29 @@ async def _handle_diff(args: dict) -> str:
             mismatches = checker.check_all()
 
         if not mismatches:
-            return json.dumps({"status": "ok", "mismatches": []}, ensure_ascii=False)
+            return json.dumps(
+                {"status": "ok", "mismatches": []},
+                ensure_ascii=False,
+            )
 
         results = []
         for m in mismatches:
-            results.append({
-                "severity": m.severity.value if hasattr(m.severity, "value") else str(m.severity),
-                "category": m.category,
-                "character_id": m.character_id,
-                "message": m.message,
-                "source": m.source,
-            })
-        return json.dumps({"status": "issues_found", "mismatches": results}, ensure_ascii=False, indent=2)
+            results.append(
+                {
+                    "severity": (
+                        m.severity.value if hasattr(m.severity, "value") else str(m.severity)
+                    ),
+                    "category": m.category,
+                    "character_id": m.character_id,
+                    "message": m.message,
+                    "source": m.source,
+                }
+            )
+        return json.dumps(
+            {"status": "issues_found", "mismatches": results},
+            ensure_ascii=False,
+            indent=2,
+        )
 
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
@@ -703,25 +732,37 @@ async def _handle_foreshadow(args: dict) -> str:
         state = store.load()
 
         if action == "list":
-            return json.dumps({
-                "total": len(state.items),
-                "items": [
-                    {
-                        "id": i.id,
-                        "description": i.description,
-                        "status": i.status.value if hasattr(i.status, "value") else i.status,
-                        "type": i.type.value if hasattr(i.type, "value") else i.type,
-                        "target_chapter": i.target_chapter,
-                    }
-                    for i in state.items
-                ],
-            }, ensure_ascii=False, indent=2)
+            return json.dumps(
+                {
+                    "total": len(state.items),
+                    "items": [
+                        {
+                            "id": i.id,
+                            "description": i.description,
+                            "status": (i.status.value if hasattr(i.status, "value") else i.status),
+                            "type": (i.type.value if hasattr(i.type, "value") else i.type),
+                            "target_chapter": i.target_chapter,
+                        }
+                        for i in state.items
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
 
         elif action == "add":
             description = args.get("description", "")
             if not description:
-                return json.dumps({"status": "error", "message": "add 操作需要 description 参数"}, ensure_ascii=False)
-            from opennovel.schemas.foreshadowing import ForeshadowItem, ForeshadowStatus, ForeshadowType
+                return json.dumps(
+                    {"status": "error", "message": "add 操作需要 description 参数"},
+                    ensure_ascii=False,
+                )
+            from opennovel.schemas.foreshadowing import (
+                ForeshadowItem,
+                ForeshadowStatus,
+                ForeshadowType,
+            )
+
             max_num = 0
             for item in state.items:
                 try:
@@ -744,17 +785,27 @@ async def _handle_foreshadow(args: dict) -> str:
         elif action == "resolve":
             item_id = args.get("id", "")
             if not item_id:
-                return json.dumps({"status": "error", "message": "resolve 操作需要 id 参数"}, ensure_ascii=False)
+                return json.dumps(
+                    {"status": "error", "message": "resolve 操作需要 id 参数"},
+                    ensure_ascii=False,
+                )
             from opennovel.schemas.foreshadowing import ForeshadowStatus
+
             for item in state.items:
                 if item.id == item_id:
                     item.status = ForeshadowStatus.RESOLVED
                     break
             store.save(state)
-            return json.dumps({"status": "success", "id": item_id, "action": "resolved"}, ensure_ascii=False)
+            return json.dumps(
+                {"status": "success", "id": item_id, "action": "resolved"},
+                ensure_ascii=False,
+            )
 
         else:
-            return json.dumps({"status": "error", "message": f"未知 action: {action}"}, ensure_ascii=False)
+            return json.dumps(
+                {"status": "error", "message": f"未知 action: {action}"},
+                ensure_ascii=False,
+            )
 
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)

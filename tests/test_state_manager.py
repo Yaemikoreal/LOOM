@@ -1,5 +1,7 @@
 """state_manager 模块测试 - 快照、回滚、Diff 生成。"""
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -474,3 +476,152 @@ class TestYamlStorageProperty:
         """测试 yaml_storage 属性返回注入的实例。"""
         manager = StateManager(project_root, yaml_storage=storage)
         assert manager.yaml_storage is storage
+
+
+class TestSnapshotCleanup:
+    """cleanup_snapshots 快照清理测试。"""
+
+    def _create_snapshot_file(
+        self,
+        snapshots_dir: Path,
+        name: str,
+        mtime_offset_days: float = 0,
+    ) -> Path:
+        """构造一个空快照文件并设置 mtime。"""
+        snap_path = snapshots_dir / name
+        snap_path.write_bytes(b'{"snapshot_id": "test", "delta_files": {}}')
+        new_mtime = time.time() - mtime_offset_days * 86400
+        snap_path.touch(exist_ok=True)
+        # 同时修改 atime 与 mtime
+        os.utime(snap_path, (new_mtime, new_mtime))
+        return snap_path
+
+    def test_cleanup_keeps_recent_count(self, project_root: Path) -> None:
+        """测试保留最近 N 个快照。"""
+        snap_dir = project_root / ".snapshots"
+        for i in range(5):
+            self._create_snapshot_file(
+                snap_dir, f"snap_old_{i}.snapshot.json", mtime_offset_days=i + 1
+            )
+
+        # max_days 设为 2，使部分旧快照不进入日期保留范围
+        manager = StateManager(project_root, max_count=2, max_days=2)
+        archived = manager.cleanup_snapshots()
+
+        # 保留最近 2 个，归档 3 个
+        assert len(archived) == 3
+        assert len(list(snap_dir.glob("*.snapshot.json"))) == 2
+        assert (snap_dir / "archive").is_dir()
+
+    def test_cleanup_keeps_recent_days(self, project_root: Path) -> None:
+        """测试保留最近 D 天内的快照。"""
+        snap_dir = project_root / ".snapshots"
+        # 5 天内 3 个，30 天外 2 个
+        self._create_snapshot_file(snap_dir, "snap_recent_1.snapshot.json", mtime_offset_days=1)
+        self._create_snapshot_file(snap_dir, "snap_recent_2.snapshot.json", mtime_offset_days=3)
+        self._create_snapshot_file(snap_dir, "snap_old_1.snapshot.json", mtime_offset_days=40)
+        self._create_snapshot_file(snap_dir, "snap_old_2.snapshot.json", mtime_offset_days=50)
+
+        manager = StateManager(project_root, max_count=1, max_days=5)
+        archived = manager.cleanup_snapshots()
+
+        # 最近 1 个 + 5 天内共 2 个 = 保留 2 个，归档 2 个
+        assert len(archived) == 2
+        assert len(list(snap_dir.glob("*.snapshot.json"))) == 2
+
+    def test_cleanup_empty(self, project_root: Path) -> None:
+        """测试无快照时返回空列表。"""
+        manager = StateManager(project_root)
+        archived = manager.cleanup_snapshots()
+        assert archived == []
+
+    def test_configure_retention(self, project_root: Path) -> None:
+        """测试运行时配置保留策略。"""
+        manager = StateManager(project_root)
+        manager.configure_snapshot_retention(10, 60)
+        assert manager.max_count == 10
+        assert manager.max_days == 60
+
+
+class TestHashOnlySnapshot:
+    """hash-only 快照策略测试。"""
+
+    def test_hash_only_for_long_chapter(self, project_root: Path, storage: YAMLStorage) -> None:
+        """测试超长章节使用 hash-only 快照。"""
+        manager = StateManager(project_root, yaml_storage=storage)
+        chapter_path = project_root / "draft" / "ch_001.md"
+
+        # 写入超过 50000 字的正文
+        long_body = "字" * 50001
+        storage.write_markdown_file(
+            chapter_path,
+            {"id": "ch_001", "pov": "char_001"},
+            f"# 第一章\n\n{long_body}",
+        )
+
+        snapshot = manager.create_snapshot("ch_001", affected_files=[chapter_path])
+        rel_path = "draft/ch_001.md"
+        assert rel_path in snapshot.delta_files
+        assert snapshot.delta_files[rel_path].get("hash_only") is True
+        assert "sha256" in snapshot.delta_files[rel_path]
+        assert "fm_before" not in snapshot.delta_files[rel_path]
+
+    def test_normal_snapshot_for_short_chapter(
+        self, project_root: Path, storage: YAMLStorage
+    ) -> None:
+        """测试普通章节仍保存完整 frontmatter。"""
+        manager = StateManager(project_root, yaml_storage=storage)
+        chapter_path = project_root / "draft" / "ch_001.md"
+
+        storage.write_markdown_file(
+            chapter_path,
+            {"id": "ch_001", "pov": "char_001"},
+            "# 第一章\n\n短正文。",
+        )
+
+        snapshot = manager.create_snapshot("ch_001", affected_files=[chapter_path])
+        rel_path = "draft/ch_001.md"
+        assert snapshot.delta_files[rel_path].get("hash_only") is not True
+        assert "fm_before" in snapshot.delta_files[rel_path]
+
+    def test_rollback_hash_only_warns(self, project_root: Path, storage: YAMLStorage) -> None:
+        """测试 hash-only 快照回滚时跳过并提示。"""
+        import orjson
+
+        manager = StateManager(project_root, yaml_storage=storage)
+        chapter_path = project_root / "draft" / "ch_001.md"
+
+        storage.write_markdown_file(
+            chapter_path,
+            {"id": "ch_001", "pov": "char_001"},
+            "# 第一章\n\n正文。",
+        )
+
+        # 手动构造 hash-only 快照
+        snap_id = "snap_hash_only"
+        snap_data = {
+            "snapshot_id": snap_id,
+            "source_command": "commit ch_001",
+            "timestamp": "2024-01-01T00:00:00",
+            "delta_files": {
+                "draft/ch_001.md": {
+                    "hash_only": True,
+                    "sha256": "abc123",
+                    "hint": "仅保存 hash",
+                }
+            },
+            "delta_sqlite": {"event_ids_to_rollback": []},
+        }
+        snap_path = project_root / ".snapshots" / f"{snap_id}.snapshot.json"
+        snap_path.write_bytes(orjson.dumps(snap_data, option=orjson.OPT_INDENT_2))
+
+        # 修改章节
+        storage.update_frontmatter(chapter_path, {"pov": "char_999"})
+
+        # 回滚应成功但跳过 hash-only 文件
+        success = manager.rollback_snapshot(snap_id)
+        assert success is True
+
+        # 文件未被恢复（因为我们没有 fm_before）
+        meta, _ = storage.read_markdown_file(chapter_path)
+        assert meta["pov"] == "char_999"

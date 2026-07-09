@@ -347,8 +347,7 @@ class TestAutonomousWriteLoop:
         # 第二次调用：返回正文
         mock_llm.chat.side_effect = [
             _MockResponse(
-                _xml_tool_call("query_canon", "魔法规则", "需要确认")
-                + "\n（等待查询结果）"
+                _xml_tool_call("query_canon", "魔法规则", "需要确认") + "\n（等待查询结果）"
             ),
             _MockResponse("根据查到的信息，魔法消耗寿命。正文继续..."),
         ]
@@ -376,9 +375,7 @@ class TestAutonomousWriteLoop:
     def test_safety_fence_interrupts(self) -> None:
         """测试安全围栏中断循环。"""
         mock_llm = MagicMock()
-        mock_llm.chat.return_value = _MockResponse(
-            _xml_tool_call("query_canon", "规则", "需要")
-        )
+        mock_llm.chat.return_value = _MockResponse(_xml_tool_call("query_canon", "规则", "需要"))
 
         mock_executor = MagicMock()
         mock_fence = MagicMock()
@@ -396,9 +393,7 @@ class TestAutonomousWriteLoop:
     def test_max_tool_calls_exceeded(self) -> None:
         """测试工具调用次数超限。"""
         mock_llm = MagicMock()
-        mock_llm.chat.return_value = _MockResponse(
-            _xml_tool_call("query_canon", "规则", "需要")
-        )
+        mock_llm.chat.return_value = _MockResponse(_xml_tool_call("query_canon", "规则", "需要"))
 
         mock_executor = MagicMock()
         mock_executor.execute.return_value = KnowledgeResult(
@@ -626,7 +621,9 @@ class TestAutonomousWriteLoopEdgeCases:
 
     def test_json_with_extra_fields(self) -> None:
         """测试 args 中包含额外字段。"""
-        payload = '{"tool": "query_canon", "args": {"query": "规则", "detail": true}, "reason": "测试"}'
+        payload = (
+            '{"tool": "query_canon", "args": {"query": "规则", "detail": true}, "reason": "测试"}'
+        )
         text = f"<tool_call>{payload}</tool_call>"
         request = ToolCallParser.parse(text)
         assert request is not None

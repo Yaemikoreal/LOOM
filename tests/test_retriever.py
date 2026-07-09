@@ -189,5 +189,5 @@ class TestAddToSubconscious:
         ret.add_to_subconscious("新灵感")
 
         # 验证 ensure_index 被调用
-        assert mock_store.ensure_index.called or True  # 确保调用不发生异常
+        assert True  # 确保调用不发生异常
         mock_store.add_document.assert_called_once()

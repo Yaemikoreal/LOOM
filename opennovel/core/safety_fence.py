@@ -1,6 +1,6 @@
 """安全围栏 — Agent 自治的约束边界。
 
-基于 ADR 0006 安全围栏设计：
+基于 ADR 0010 安全围栏设计：
 - 递归深度防护：防止 Agent 无限嵌套调用
 - Token 预算追踪：限制单次自治调用的 Token 消耗
 - 超时熔断：Agent 自治操作超过时限自动终止
@@ -19,10 +19,11 @@
 
 import logging
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,70 @@ DEFAULT_MAX_RECURSION_DEPTH = 3
 DEFAULT_MAX_TOKENS_PER_CALL = 4000
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_FORBIDDEN_MODIFICATIONS: list[str] = field(default_factory=lambda: [])
+
+# 默认 Agent 工具权限矩阵（基于 roadmap.md 第 3 节功能安全设计）
+# 格式: {"agent_name": {"allowed": [...], "disallowed": [...]}}
+# allowed 为空列表表示未使用白名单；disallowed 优先于 allowed。
+DEFAULT_TOOL_PERMISSIONS: dict[str, dict[str, list[str]]] = {
+    "writer": {
+        "allowed": [
+            "query_canon",
+            "query_character",
+            "query_subconscious",
+            "query_event",
+        ],
+        "disallowed": [
+            "write_event_store",
+            "write_canon",
+            "write_characters",
+            "delete_file",
+        ],
+    },
+    "critic": {
+        "allowed": [
+            "query_canon",
+            "query_character",
+            "query_event",
+            "query_subconscious",
+        ],
+        "disallowed": [
+            "write_event_store",
+            "write_canon",
+            "write_characters",
+            "write_draft",
+            "delete_file",
+        ],
+    },
+    "manager": {
+        "allowed": [
+            "query_draft",
+            "write_event_store",
+            "write_state_cache",
+        ],
+        "disallowed": [
+            "write_canon",
+            "write_characters",
+            "write_draft",
+            "delete_file",
+        ],
+    },
+    "director": {
+        "allowed": [
+            "query_evaluation",
+            "query_event",
+            "query_state",
+            "query_causal_chain",
+        ],
+        "disallowed": [
+            "write_event_store",
+            "write_canon",
+            "write_characters",
+            "write_draft",
+            "write_state_cache",
+            "delete_file",
+        ],
+    },
+}
 
 
 @dataclass
@@ -44,6 +109,7 @@ class SafetyFenceConfig:
         forbidden_modifications: 禁止修改的 CANON 元素列表
         canon_dir: Canon 设定目录（启用世界观规则校验时需要）
         enabled: 是否启用安全围栏
+        llm_canon_audit_enabled: 是否启用 LLM 二次 Canon 审计（只标记不阻断）
         tool_permissions: 工具调用权限表
             格式: {"agent_name": {"allowed": [...], "disallowed": [...]}}
             空列表 = 不限制
@@ -55,6 +121,7 @@ class SafetyFenceConfig:
     forbidden_modifications: list[str] = field(default_factory=list)
     canon_dir: str | None = None
     enabled: bool = True
+    llm_canon_audit_enabled: bool = False
     tool_permissions: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
 
@@ -244,7 +311,8 @@ class SafetyFence:
         if disallowed and tool_name in disallowed:
             logger.warning(
                 "安全围栏: Agent %s 无权调用工具 %s（黑名单）",
-                agent, tool_name,
+                agent,
+                tool_name,
             )
             self.violations.append(
                 SafetyViolation(
@@ -259,7 +327,8 @@ class SafetyFence:
         if allowed and tool_name not in allowed:
             logger.warning(
                 "安全围栏: Agent %s 无权调用工具 %s（不在白名单）",
-                agent, tool_name,
+                agent,
+                tool_name,
             )
             self.violations.append(
                 SafetyViolation(
@@ -322,11 +391,11 @@ class SafetyFence:
 
         blocking_violations = 0
         for v in violations:
-            if v.severity == "violation":
-                blocking_violations += 1
-            elif v.severity == "warning":
-                blocking_violations += 1
-            elif v.severity == "suggestion" and strict:
+            if (
+                v.severity == "violation"
+                or v.severity == "warning"
+                or (v.severity == "suggestion" and strict)
+            ):
                 blocking_violations += 1
 
             self.violations.append(

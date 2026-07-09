@@ -9,7 +9,6 @@ import logging
 from pathlib import Path
 
 from opennovel.core.context_assembler import (
-    ContextStrategy,
     assemble_context,
     detect_strategy,
     get_model_window,
@@ -119,7 +118,7 @@ class Critic:
             subconscious_content=subconscious_content,
             causal_chain_context=causal_chain_context,
             active_characters=self._get_all_character_ids(),
-            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, 'model', ''))),
+            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, "model", ""))),
         )
 
     def _build_task_message(

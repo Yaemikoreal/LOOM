@@ -219,7 +219,7 @@ class TestManagerUpdate:
             project_root=empty_project_root,
         )
 
-        result = manager.update("ch_001", "章节正文", ["char_001"])
+        manager.update("ch_001", "章节正文", ["char_001"])
 
         mock_sm.apply_event.assert_called_once()
         event = mock_sm.apply_event.call_args[0][0]
@@ -621,6 +621,8 @@ class TestManagerParseUpdate:
             state_manager=MagicMock(),
             project_root=empty_project_root,
         )
+        from pydantic import ValidationError
+
         text = '{"character_updates": []}'  # 缺少 events 和 chapter_summary
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             manager._parse_update_from_text(text)

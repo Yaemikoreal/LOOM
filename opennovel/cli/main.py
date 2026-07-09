@@ -13,11 +13,14 @@
 - novel config    : 查看/设置全局配置
 - novel foreshadow: 查看/管理伏笔追踪
 - novel reindex   : 全量重建搜索索引（FTS5 + 向量索引）
+- novel snapshot  : 快照管理（清理/归档）
 """
 
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")  # noqa: E402
+
+import contextlib
 
 import typer
 from rich import print as rprint
@@ -25,8 +28,10 @@ from rich.console import Console
 from rich.table import Table
 
 from opennovel.cli.auto import auto_app
+from opennovel.cli.causal import causal_app
 from opennovel.cli.commit import commit_app
 from opennovel.cli.reindex import reindex_app
+from opennovel.cli.report import report_app
 from opennovel.cli.stash import stash_app
 from opennovel.cli.write import write_app
 
@@ -45,6 +50,44 @@ app.add_typer(commit_app, name="commit")
 app.add_typer(stash_app, name="stash")
 app.add_typer(auto_app, name="auto")
 app.add_typer(reindex_app, name="reindex")
+app.add_typer(report_app, name="report")
+app.add_typer(causal_app, name="causal")
+
+snapshot_app = typer.Typer(
+    name="snapshot",
+    help="快照管理：清理、归档与保留策略",
+    no_args_is_help=True,
+)
+
+
+@snapshot_app.command("cleanup")
+def snapshot_cleanup(
+    path: str = typer.Argument(".", help="项目路径"),
+    max_count: int = typer.Option(50, "--max-count", help="保留最近快照数量", min=1),
+    max_days: int = typer.Option(30, "--max-days", help="保留最近天数", min=1),
+) -> None:
+    """清理过期快照，将超过保留策略的快照归档到 .snapshots/archive/。
+
+    保留规则（取并集）：
+    - 最近 max_count 个快照
+    - 最近 max_days 天内的快照
+
+    归档而非删除，保留恢复可能性。
+    """
+    from pathlib import Path
+
+    from opennovel.core.state_manager import StateManager
+
+    project_root = Path(path).resolve()
+    manager = StateManager(project_root, max_count=max_count, max_days=max_days)
+    archived = manager.cleanup_snapshots()
+
+    rprint(f"[bold green]✓[/bold green] 已归档 {len(archived)} 个过期快照")
+    if archived:
+        rprint(f"[dim]归档位置: {manager.snapshots_dir / 'archive'}[/dim]")
+
+
+app.add_typer(snapshot_app, name="snapshot")
 
 
 @app.command()
@@ -68,16 +111,15 @@ def init(
     - 在 workspace 目录下创建项目（传入 . 则在当前目录创建）
     - 直接使用默认配置
     """
+    # ── 确定参数：name / template / mode ──
+    import os
     from pathlib import Path
 
-    import yaml
     import click
+    import yaml
 
     from opennovel.core.global_config import GlobalConfig
     from opennovel.storage.yaml_storage import YAMLStorage
-
-    # ── 确定参数：name / template / mode ──
-    import os
 
     has_deepseek = bool(os.environ.get("DEEPSEEK_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
@@ -85,7 +127,6 @@ def init(
     global_cfg = GlobalConfig.load()
 
     effective_model: str = global_cfg.default_model
-    effective_template: str = template
     is_interactive = name is None
     project_root: Path
 
@@ -98,8 +139,9 @@ def init(
         if not safe_name:
             safe_name = "my_story"
 
-        effective_template = typer.prompt(
-            "项目模板", default="standard",
+        typer.prompt(
+            "项目模板",
+            default="standard",
             type=click.Choice(["standard", "minimal"]),
         )
 
@@ -111,7 +153,8 @@ def init(
             rprint("  或在项目创建后编辑 novel.yaml 中的 api_key / api_base 字段\n")
 
         mode = typer.prompt(
-            "模式选择", default="quick",
+            "模式选择",
+            default="quick",
             type=click.Choice(["quick", "expert"]),
         )
 
@@ -227,7 +270,7 @@ def init(
             yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
         rprint(f"  [green]✓[/green] 创建配置文件: novel.yaml (model: {effective_model})")
 
-    rprint(f"[bold green]✅ 项目初始化完成！[/bold green]")
+    rprint("[bold green]✅ 项目初始化完成！[/bold green]")
     rprint(f"  项目路径: {project_root}")
     rprint(f"  默认模型: {effective_model}")
     if not has_any_key and name is None:
@@ -285,19 +328,14 @@ def list_projects() -> None:
 
         # 统计章节
         draft_dir = proj / "draft"
-        if draft_dir.exists():
-            chapters = len(list(draft_dir.glob("ch_*.md")))
-        else:
-            chapters = 0
+        chapters = len(list(draft_dir.glob("ch_*.md"))) if draft_dir.exists() else 0
 
         # 统计字数
         total_words = 0
         if draft_dir.exists():
             for ch_file in sorted(draft_dir.glob("ch_*.md")):
-                try:
+                with contextlib.suppress(Exception):
                     total_words += len(ch_file.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
 
         table.add_row(
             f"[link=file:///{proj}]{name}[/link]",
@@ -514,6 +552,7 @@ def doctor(
     path: str = typer.Argument(".", help="项目路径"),
     dashboard: bool = typer.Option(True, "--dashboard/--no-dashboard", help="显示健康面板"),
     calibration: bool = typer.Option(False, "--calibration", help="Critic 评分校准分析"),
+    causal: bool = typer.Option(False, "--causal", help="运行全局因果图分析诊断"),
 ) -> None:
     """诊断世界线健康度：显示项目健康面板 + 详细诊断。
 
@@ -521,12 +560,13 @@ def doctor(
     随后列出详细的诊断问题（孤立角色、悬空引用、ID 一致性、脏标记）。
 
     使用 --calibration 运行 Critic 评分校准分析。
+    使用 --causal 运行全局因果图后台分析诊断。
     """
     from pathlib import Path
 
     from rich.panel import Panel
 
-    from opennovel.core.doctor import DiagnosticLevel, Doctor
+    from opennovel.core.doctor import Doctor
 
     project_root = Path(path).resolve()
 
@@ -536,12 +576,23 @@ def doctor(
 
         auditor = EvaluationAuditor.from_project(project_root)
         if not auditor:
-            rprint("[yellow]无评分数据（.novel.metrics.db 不存在或为空）[/yellow]")
+            rprint("[yellow]无评分数据（.novel.db 中无 metrics 记录或为空）[/yellow]")
             rprint("运行 novel auto 生成评分数据后再次检查。")
             return
         report = auditor.analyze()
         rprint(f"[bold cyan]OpenNovel 评分校准[/bold cyan] - {project_root.name}\n")
         rprint(auditor.format_report(report))
+        return
+
+    # ── 全局因果图分析模式 ──
+    if causal:
+        rprint(f"[bold cyan]OpenNovel doctor --causal[/bold cyan] - {project_root.name}\n")
+        doc = Doctor(project_root)
+        items = doc.diagnose_causal()
+        if not items:
+            rprint("[bold green]✓ 无因果图诊断信息[/bold green]")
+            return
+        _render_diagnostic_table(items)
         return
 
     rprint(f"[bold cyan]OpenNovel doctor[/bold cyan] - {project_root.name}\n")
@@ -586,10 +637,7 @@ def doctor(
     # ── 角色与事件面板 ──
     chars = data.get("characters", {})
     events = data.get("events", {})
-    char_evt_text = (
-        f"活跃角色: {chars.get('total', 0)}  |  "
-        f"已记录事件: {events.get('total', 0)}"
-    )
+    char_evt_text = f"活跃角色: {chars.get('total', 0)}  |  已记录事件: {events.get('total', 0)}"
     if events.get("types"):
         char_evt_text += f"\n事件类型: {', '.join(events['types'][:6])}"
     console.print(Panel(char_evt_text, title="👤 角色 & 📋 事件", border_style="cyan"))
@@ -635,7 +683,9 @@ def doctor(
 @app.command()
 def foreshadow(
     list_items: bool = typer.Option(True, "--list", help="展示伏笔列表"),
-    add: str | None = typer.Option(None, "--add", help="手动添加伏笔描述（用于人工补充 Director 未检测到的伏笔）"),
+    add: str | None = typer.Option(
+        None, "--add", help="手动添加伏笔描述（用于人工补充 Director 未检测到的伏笔）"
+    ),
     path: str = typer.Argument(".", help="项目路径"),
 ) -> None:
     """查看或管理伏笔追踪表。
@@ -653,8 +703,6 @@ def foreshadow(
     store = ForeshadowStore(project_root)
 
     if add:
-        import json
-
         from opennovel.schemas.foreshadowing import ForeshadowItem, ForeshadowStatus, ForeshadowType
 
         state = store.load()
@@ -711,7 +759,7 @@ def foreshadow(
 
     console.print(table)
     rprint(f"\n[dim]伏笔文件: {store.file_path}[/dim]")
-    rprint("[dim]新增伏笔: novel foreshadow --add \"描述...\"[/dim]")
+    rprint('[dim]新增伏笔: novel foreshadow --add "描述..."[/dim]')
 
 
 if __name__ == "__main__":

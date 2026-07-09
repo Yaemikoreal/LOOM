@@ -23,11 +23,13 @@
 详见 ADR 0007 — 混合语义-关键词检索 + 重排序架构。
 """
 
+import concurrent.futures
 import hashlib
 import logging
 from pathlib import Path
 from typing import Any
 
+from opennovel.core.config import LoomConfig
 from opennovel.core.reranker import Reranker
 from opennovel.schemas.event import EventLog
 from opennovel.schemas.search import Chunk, ChunkSource, RerankedChunk, RetrievalResult
@@ -92,7 +94,14 @@ class SearchPipeline:
     def reranker(self) -> Reranker:
         """获取 Reranker 实例（惰性初始化）。"""
         if self._reranker is None:
-            self._reranker = Reranker()
+            try:
+                cfg = LoomConfig.load(self.project_root)
+                self._reranker = Reranker(
+                    model_name=cfg.reranker_model,
+                    device=cfg.reranker_device,
+                )
+            except Exception:
+                self._reranker = Reranker()
         return self._reranker
 
     # ── 主入口 ─────────────────────────────────────────────────────
@@ -120,15 +129,20 @@ class SearchPipeline:
         if not query or not query.strip():
             return RetrievalResult()
 
-        # ── 三通道并行检索 ──
-        vector_chunks = self._search_vector(query, top_k=_DEFAULT_VECTOR_TOP_K)
-        fts5_results = self._search_fts5(query, top_k=_DEFAULT_FTS5_TOP_K)
-        event_chunks = self._search_events(
-            query,
-            chapter_id=chapter_id,
-            character_ids=character_ids,
-            top_k=_DEFAULT_EVENT_TOP_K,
-        )
+        # ── 三通道并行检索（P1 性能优化） ──
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_vector = executor.submit(self._search_vector, query, _DEFAULT_VECTOR_TOP_K)
+            future_fts5 = executor.submit(self._search_fts5, query, _DEFAULT_FTS5_TOP_K)
+            future_events = executor.submit(
+                self._search_events,
+                query,
+                chapter_id=chapter_id,
+                character_ids=character_ids,
+                top_k=_DEFAULT_EVENT_TOP_K,
+            )
+            vector_chunks = future_vector.result()
+            fts5_results = future_fts5.result()
+            event_chunks = future_events.result()
 
         # ── 收集所有候选 Chunk（去重） ──
         all_chunks: list[Chunk] = []
@@ -166,7 +180,8 @@ class SearchPipeline:
                 skip_reranker = True
                 logger.debug(
                     "RRF 阈值退出: top1=%.4f, top2=%.4f (>2x)",
-                    sorted_scores[0], sorted_scores[1],
+                    sorted_scores[0],
+                    sorted_scores[1],
                 )
 
         # ── Cross-Encoder 重排序 ──
@@ -334,7 +349,7 @@ class SearchPipeline:
 
             # 高压力事件补充（带 LIMIT 防全表扫描）
             high_events = self._event_store.get_high_pressure_events(threshold=0.3)
-            events.extend(high_events[:max(1, top_k // 2)])
+            events.extend(high_events[: max(1, top_k // 2)])
 
             # 去重（按 event_id）
             seen: set[str] = set()
@@ -352,10 +367,7 @@ class SearchPipeline:
                 query_lower = query.lower()
                 filtered: list[EventLog] = []
                 for evt in unique_events:
-                    if any(
-                        word in evt.description.lower()
-                        for word in query_lower.split()
-                    ):
+                    if any(word in evt.description.lower() for word in query_lower.split()):
                         filtered.append(evt)
                 unique_events = filtered
 

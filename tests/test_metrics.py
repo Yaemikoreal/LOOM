@@ -10,7 +10,6 @@
 
 import pytest
 
-from opennovel.schemas.metrics import AgentTrace, EvaluationHistory, TokenUsage
 from opennovel.storage.metrics import MetricsStore
 
 
@@ -27,7 +26,7 @@ class TestMetricsStoreInit:
     def test_context_manager(self, tmp_path):
         """上下文管理器正确关闭。"""
         db_path = tmp_path / "test.metrics.db"
-        with MetricsStore(db_path) as store:
+        with MetricsStore(db_path):
             assert db_path.exists()
 
 
@@ -218,8 +217,11 @@ class TestAgentTrace:
         """错误状态正确记录。"""
         with MetricsStore(tmp_path / "test.db") as store:
             store.record_trace(
-                "manager", "update", "ch_001",
-                status="error", detail="JSON 解析失败",
+                "manager",
+                "update",
+                "ch_001",
+                status="error",
+                detail="JSON 解析失败",
             )
             traces = store.get_traces()
             assert traces[0].status == "error"
@@ -252,9 +254,8 @@ class TestTraceContextManager:
     def test_error_trace(self, tmp_path):
         """异常执行记录 error 状态。"""
         with MetricsStore(tmp_path / "test.db") as store:
-            with pytest.raises(ValueError):
-                with store.trace("writer", "write", "ch_001"):
-                    raise ValueError("测试错误")
+            with pytest.raises(ValueError), store.trace("writer", "write", "ch_001"):
+                raise ValueError("测试错误")
 
             traces = store.get_traces()
             assert len(traces) == 1
@@ -280,3 +281,73 @@ class TestTraceContextManager:
         bus = LLMBus(model="gpt-4")  # 无 metrics_store
         # 不应抛出异常
         assert bus.metrics_store is None
+
+
+class TestMetricsMigration:
+    """旧 .novel.metrics.db 迁移到 .novel.db 测试。"""
+
+    def test_migration_from_legacy_db(self, tmp_path):
+        """存在旧 metrics 数据库时自动迁移到 .novel.db。"""
+        legacy_path = tmp_path / ".novel.metrics.db"
+        new_path = tmp_path / ".novel.db"
+
+        # 先在旧数据库中写入数据
+        with MetricsStore(legacy_path) as legacy_store:
+            legacy_store.record_token_usage("writer", "ch_001", "gpt-4", 100, 200)
+            legacy_store.record_evaluation("ch_001", 85, [17, 17, 17, 17, 17], True)
+
+        # 初始化新的 MetricsStore（目标 .novel.db），应触发迁移
+        with MetricsStore(new_path) as new_store:
+            usage = new_store.get_total_usage()
+            assert usage["total_tokens"] == 300
+            history = new_store.get_evaluation_history()
+            assert len(history) == 1
+            assert history[0].total_score == 85
+
+        # 旧数据库应被重命名
+        assert not legacy_path.exists()
+        assert (tmp_path / ".novel.metrics.db.migrated").exists()
+
+    def test_no_migration_when_no_legacy_db(self, tmp_path):
+        """无旧数据库时正常创建新表。"""
+        new_path = tmp_path / ".novel.db"
+        with MetricsStore(new_path) as store:
+            store.record_token_usage("writer", "ch_001", "gpt-4", 50, 100)
+            usage = store.get_total_usage()
+            assert usage["total_tokens"] == 150
+
+
+class TestCostReport:
+    """Token/成本统计报告测试。"""
+
+    def test_cost_report_empty(self, tmp_path):
+        """无记录时返回空报告。"""
+        with MetricsStore(tmp_path / ".novel.db") as store:
+            report = store.get_cost_report()
+        assert report["lines"] == []
+        assert report["total_cost"] == 0.0
+
+    def test_cost_report_grouping(self, tmp_path):
+        """按 agent/model/call_type 分组并计算成本。"""
+        with MetricsStore(tmp_path / ".novel.db") as store:
+            store.record_token_usage("writer", "ch_001", "gpt-4", 1000, 2000, call_type="write")
+            store.record_token_usage("writer", "ch_002", "gpt-4", 500, 1000, call_type="write")
+            store.record_token_usage("critic", "ch_001", "gpt-4o", 800, 200, call_type="evaluate")
+            report = store.get_cost_report()
+
+        assert len(report["lines"]) == 2
+        writer_line = next(line for line in report["lines"] if line["agent"] == "writer")
+        assert writer_line["calls"] == 2
+        assert writer_line["prompt_tokens"] == 1500
+        assert writer_line["completion_tokens"] == 3000
+        assert writer_line["cost"] > 0
+
+    def test_cost_report_custom_prices(self, tmp_path):
+        """自定义单价表覆盖默认值。"""
+        with MetricsStore(tmp_path / ".novel.db") as store:
+            store.record_token_usage("writer", "ch_001", "custom-model", 1000, 1000)
+            report = store.get_cost_report(
+                model_prices={"custom-model": {"prompt": 0.01, "completion": 0.02}}
+            )
+
+        assert report["total_cost"] == 0.03  # 1k*0.01 + 1k*0.02

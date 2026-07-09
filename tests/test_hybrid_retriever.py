@@ -8,10 +8,7 @@
 - 回退模式（无 EventStore / 无 Retriever）
 """
 
-from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from opennovel.core.hybrid_retriever import HybridRetriever, RetrievalResult
 from opennovel.schemas.event import EventCreate, EventType
@@ -65,15 +62,17 @@ class TestQueryNarrativeContext:
         store = EventStore(db_path)
 
         # 写入测试事件
-        store.add_event(EventCreate(
-            event_id="evt_001",
-            chapter_id="ch_001",
-            timestamp="第1天",
-            character_id="char_001",
-            event_type=EventType.INJURY,
-            description="角色受伤",
-            causal_pressure=0.9,
-        ))
+        store.add_event(
+            EventCreate(
+                event_id="evt_001",
+                chapter_id="ch_001",
+                timestamp="第1天",
+                character_id="char_001",
+                event_type=EventType.INJURY,
+                description="角色受伤",
+                causal_pressure=0.9,
+            )
+        )
 
         mock_ret = MagicMock()
         mock_ret.query_canon.return_value = ""
@@ -104,18 +103,29 @@ class TestQueryNarrativeContext:
         db_path = tmp_path / ".novel.db"
         store = EventStore(db_path)
 
-        store.add_events_batch([
-            EventCreate(
-                event_id="evt_001", chapter_id="ch_001", timestamp="t1",
-                character_id="char_001", event_type=EventType.INJURY,
-                description="受伤", causal_pressure=0.9,
-            ),
-            EventCreate(
-                event_id="evt_002", chapter_id="ch_001", timestamp="t2",
-                character_id="char_001", event_type=EventType.HEAL,
-                description="治疗", causal_pressure=0.7, caused_by="evt_001",
-            ),
-        ])
+        store.add_events_batch(
+            [
+                EventCreate(
+                    event_id="evt_001",
+                    chapter_id="ch_001",
+                    timestamp="t1",
+                    character_id="char_001",
+                    event_type=EventType.INJURY,
+                    description="受伤",
+                    causal_pressure=0.9,
+                ),
+                EventCreate(
+                    event_id="evt_002",
+                    chapter_id="ch_001",
+                    timestamp="t2",
+                    character_id="char_001",
+                    event_type=EventType.HEAL,
+                    description="治疗",
+                    causal_pressure=0.7,
+                    caused_by="evt_001",
+                ),
+            ]
+        )
 
         mock_ret = MagicMock()
         mock_ret.query_canon.return_value = ""
@@ -145,18 +155,28 @@ class TestQueryNarrativeContext:
         db_path = tmp_path / ".novel.db"
         store = EventStore(db_path)
 
-        store.add_events_batch([
-            EventCreate(
-                event_id="evt_001", chapter_id="ch_001", timestamp="t1",
-                character_id="char_001", event_type=EventType.INJURY,
-                description="角色1受伤", causal_pressure=0.8,
-            ),
-            EventCreate(
-                event_id="evt_002", chapter_id="ch_001", timestamp="t1",
-                character_id="char_002", event_type=EventType.INJURY,
-                description="角色2受伤", causal_pressure=0.7,
-            ),
-        ])
+        store.add_events_batch(
+            [
+                EventCreate(
+                    event_id="evt_001",
+                    chapter_id="ch_001",
+                    timestamp="t1",
+                    character_id="char_001",
+                    event_type=EventType.INJURY,
+                    description="角色1受伤",
+                    causal_pressure=0.8,
+                ),
+                EventCreate(
+                    event_id="evt_002",
+                    chapter_id="ch_001",
+                    timestamp="t1",
+                    character_id="char_002",
+                    event_type=EventType.INJURY,
+                    description="角色2受伤",
+                    causal_pressure=0.7,
+                ),
+            ]
+        )
 
         mock_ret = MagicMock()
         mock_ret.query_canon.return_value = ""

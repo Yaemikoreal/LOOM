@@ -15,7 +15,6 @@ from opennovel.schemas.director import DirectorAnalysis
 from opennovel.schemas.evaluation import ChapterEvaluation, DimensionScore
 from opennovel.schemas.outline import ChapterOutline, SceneBreakdown
 
-
 # ── 辅助工具 ──
 
 
@@ -240,6 +239,7 @@ class TestDirectorScheduling:
     def test_invalid_scheduling_action(self) -> None:
         """测试非法调度动作值被拒绝。"""
         from pydantic import ValidationError
+
         from opennovel.schemas.director import SchedulingProposal
 
         with pytest.raises(ValidationError):
@@ -275,7 +275,7 @@ class TestDirectorScheduling:
 
     def test_director_analyze_with_remaining_chapters(self) -> None:
         """测试 Director.analyze 收到剩余章节信息。"""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         from opennovel.agents.director import Director
 

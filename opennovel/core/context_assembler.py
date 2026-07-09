@@ -111,7 +111,7 @@ def detect_strategy(max_window: int) -> ContextStrategy:
     """
     if max_window < _FRUGAL上限:
         return ContextStrategy.FRUGAL
-    elif max_window <= _STANDARD上限:
+    elif max_window < _STANDARD上限:
         return ContextStrategy.STANDARD
     else:
         return ContextStrategy.PANORAMIC
@@ -375,6 +375,7 @@ def assemble_context(
             causal_chain_context,
             active_characters,
             yaml_storage,
+            metrics_store=metrics_store,
         )
     else:
         return _assemble_frugal(
@@ -387,6 +388,7 @@ def assemble_context(
             causal_chain_context,
             active_characters,
             yaml_storage,
+            metrics_store=metrics_store,
         )
 
 
@@ -403,6 +405,7 @@ def _assemble_frugal(
     causal_chain_context: str,
     active_characters: list[str] | None,
     yaml_storage: YAMLStorage | None,
+    metrics_store: Any | None = None,
 ) -> list[dict[str, str]]:
     """FRUGAL 策略：固定 8K 预算，按比例分配各层级。"""
     counter = TokenCounter()
@@ -522,6 +525,7 @@ def _assemble_standard(
     causal_chain_context: str,
     active_characters: list[str] | None,
     yaml_storage: YAMLStorage | None,
+    metrics_store: Any | None = None,
 ) -> list[dict[str, str]]:
     """STANDARD 策略：48K 预算，注入全部活跃角色状态。
 
@@ -605,6 +609,7 @@ def _assemble_standard(
                     cached = metrics_store.get_state_cache(char_id)
                     if cached and cached.chapter_id == _proj_chapter:
                         from opennovel.schemas.state import CharacterStateSnapshot
+
                         snap = CharacterStateSnapshot.model_validate_json(cached.state_json)
                         if snap.event_count > 0:
                             snapshots.append(snap)
@@ -626,7 +631,9 @@ def _assemble_standard(
 
             # 注入到上下文
             if digest_parts:
-                proj_text = wrap_with_authority_tag("\n".join(digest_parts), AuthorityLevel.STATE_MEMORY)
+                proj_text = wrap_with_authority_tag(
+                    "\n".join(digest_parts), AuthorityLevel.STATE_MEMORY
+                )
                 proj_tokens = counter.count(proj_text)
                 remaining = state_budget - state_used
                 if remaining > 0 and proj_tokens <= remaining:
@@ -853,10 +860,12 @@ def _load_previous_chapters(
     counter: TokenCounter,
     budget: int,
 ) -> str:
-    """加载历史章节正文，按倒序注入（最近的章节优先）。
+    """加载历史章节，按距离动态衰减注入（P2 支撑长篇）。
 
-    扫描 draft/ 目录下所有 .md 文件，排除当前章节，
-    使用 split_chapter_into_scenes() 切分后按倒序拼接。
+    策略：
+    - 最近 3 章：注入全文
+    - 第 4-10 章：注入 Manager 生成的章节摘要（summaries/）
+    - 10 章以前：只注入 EventStore 关键事件
 
     Args:
         current_chapter_path: 当前章节路径（排除）
@@ -865,53 +874,103 @@ def _load_previous_chapters(
         budget: 可用 Token 预算
 
     Returns:
-        拼接后的历史文本（倒序），超预算时截断
+        拼接后的历史上下文文本（按章节距离衰减），超预算时截断
     """
     draft_dir = project_root / "draft"
     if not draft_dir.exists():
         return ""
 
-    # 扫描所有章节文件，按文件名排序
-    chapter_files = sorted(draft_dir.glob("*.md"))
-    # 排除当前章节
-    chapter_files = [f for f in chapter_files if f != current_chapter_path]
-
+    # 扫描所有章节文件，按文件名排序（ch_001, ch_002, ...）
+    chapter_files = sorted(draft_dir.glob("ch_*.md"))
     if not chapter_files:
         return ""
 
-    # 倒序读取（最近的章节优先）
+    # 确定当前章节在序列中的位置
+    try:
+        current_index = chapter_files.index(current_chapter_path)
+    except ValueError:
+        current_index = len(chapter_files)
+
+    previous_files = chapter_files[:current_index]
+    if not previous_files:
+        return ""
+
+    # 按距离当前章节倒序排列（最近的在前）
+    previous_files = list(reversed(previous_files))
+
     history_parts: list[str] = []
     total_tokens = 0
 
-    for chapter_file in reversed(chapter_files):
+    # 加载 EventStore 关键事件（只加载一次）
+    high_pressure_events: list[str] = []
+    db_path = project_root / ".novel.db"
+    if db_path.exists():
         try:
-            body = chapter_file.read_text(encoding="utf-8")
-            # 跳过 Frontmatter，只取正文
-            if body.startswith("---"):
-                parts = body.split("---", 2)
-                if len(parts) >= 3:
-                    body = parts[2].strip()
+            event_store = EventStore(db_path)
+            events = event_store.get_high_pressure_events(threshold=0.7)
+            high_pressure_events = [
+                f"[{e.chapter_id}] {e.event_type}: {e.description}" for e in events
+            ]
         except Exception:
+            pass
+
+    for distance, chapter_file in enumerate(previous_files, start=1):
+        if total_tokens >= budget:
+            break
+
+        chapter_id = chapter_file.stem
+        part_text = ""
+        part_label = ""
+
+        if distance <= 3:
+            # 最近 3 章：全文
+            try:
+                body = chapter_file.read_text(encoding="utf-8")
+                if body.startswith("---"):
+                    parts = body.split("---", 2)
+                    if len(parts) >= 3:
+                        body = parts[2].strip()
+                scenes = split_chapter_into_scenes(body, max_tokens=2000)
+                part_text = "\n\n".join(scenes)
+                part_label = f"[{chapter_id} | 全文]"
+            except Exception:
+                continue
+        elif distance <= 10:
+            # 第 4-10 章：摘要
+            summary_path = project_root / "summaries" / f"{chapter_id}.md"
+            if summary_path.exists():
+                try:
+                    body = summary_path.read_text(encoding="utf-8")
+                    if body.startswith("---"):
+                        parts = body.split("---", 2)
+                        if len(parts) >= 3:
+                            body = parts[2].strip()
+                    part_text = body
+                    part_label = f"[{chapter_id} | 摘要]"
+                except Exception:
+                    continue
+        else:
+            # 10 章以前：只注入关键事件（每章只取相关事件）
+            relevant = [e for e in high_pressure_events if e.startswith(f"[{chapter_id}]")]
+            if relevant:
+                part_text = "\n".join(relevant)
+                part_label = f"[{chapter_id} | 关键事件]"
+            else:
+                continue
+
+        if not part_text:
             continue
 
-        if not body:
-            continue
-
-        # 切分场景
-        scenes = split_chapter_into_scenes(body, max_tokens=2000)
-        chapter_text = "\n\n".join(scenes)
-
-        # 检查预算
+        chapter_text = f"{part_label}\n{part_text}"
         chapter_tokens = counter.count(chapter_text)
         if total_tokens + chapter_tokens > budget:
-            # 截断到剩余预算
             remaining = budget - total_tokens
             if remaining > 0:
                 chapter_text = counter.truncate_to_budget(chapter_text, remaining)
-                history_parts.append(f"[{chapter_file.stem}]\n{chapter_text}")
+                history_parts.append(chapter_text)
             break
 
-        history_parts.append(f"[{chapter_file.stem}]\n{chapter_text}")
+        history_parts.append(chapter_text)
         total_tokens += chapter_tokens
 
     return "\n\n".join(history_parts)
@@ -1017,8 +1076,7 @@ def _format_chunks_for_context(chunks: list, max_chunks: int = 5) -> str:
     for rc in chunks[:max_chunks]:
         chunk = rc.chunk if hasattr(rc, "chunk") else rc
         text = getattr(chunk, "text", str(chunk))
-        score = getattr(rc, "reranker_score",
-                        getattr(rc, "rrf_score", 0.0))
+        score = getattr(rc, "reranker_score", getattr(rc, "rrf_score", 0.0))
         if score > 0:
             parts.append(f"[score={score:.3f}]\n{text.strip()}")
         else:

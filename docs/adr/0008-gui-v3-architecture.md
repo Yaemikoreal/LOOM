@@ -1,4 +1,6 @@
-# 0008 — OpenNovel V3.0 GUI 全架构
+# 0008 — OpenNovel V3.0 GUI 全架构（已废弃 / Superseded）
+
+> **状态**：已废弃。V3.0 GUI（Tauri 2 + React 19 + TypeScript + FastAPI + WebSocket）已被删除，当前 OpenNovel 无 GUI，仅保留 CLI 与 MCP Server。未来若重新设计 GUI，需另起新 ADR。
 
 Tauri 2 + React 19 + TypeScript 桌面端重写，FastAPI + WebSocket 后端，替代 PySide6 GUI。
 

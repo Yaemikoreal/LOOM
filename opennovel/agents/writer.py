@@ -3,7 +3,7 @@
 负责思考规划（输出结构化大纲）和文学创作（输出章节正文）。
 两阶段工作流: think → write/revise。
 
-支持 Agent 自治（ADR 0006）：通过 write_with_autonomy() 实现
+支持 Agent 自治（ADR 0010）：通过 write_with_autonomy() 实现
 创作中的主动工具调用，Writer 可在写作过程中自主查询缺失信息。
 """
 
@@ -19,7 +19,6 @@ from opennovel.core.agent_autonomy import (
     ToolCallParser,
 )
 from opennovel.core.context_assembler import (
-    ContextStrategy,
     assemble_context,
     detect_strategy,
     get_model_window,
@@ -42,7 +41,7 @@ MAX_RETRIES = 2
 class Writer:
     """Writer Agent — 小说创作代理。
 
-    支持阶段级模型路由（ADR 0005 成本优化器）：
+    支持阶段级模型路由（ADR 0009 成本优化器）：
     - think_model: 思考阶段模型（可用便宜小模型，如 gpt-4o-mini）
     - write_model: 创作阶段模型（主力大模型）
     - revise_model: 修订阶段模型（不设置则继承 write_model 或默认 model）
@@ -81,12 +80,12 @@ class Writer:
         self.words_per_chapter = words_per_chapter
         self.event_store = event_store
         self.hybrid_retriever = hybrid_retriever
-        # 阶段级模型路由（ADR 0005）
+        # 阶段级模型路由（ADR 0009）
         self.think_model = think_model
         self.write_model = write_model or think_model
         self.revise_model = revise_model or write_model or think_model
         self.write_model_climax = write_model_climax  # 高潮章节专用模型
-        # Agent 自治（ADR 0006）
+        # Agent 自治（ADR 0010）
         self.tool_registry = tool_registry
         self.safety_fence = safety_fence
         self.autonomy_config = autonomy_config or AutonomousConfig(enabled=False)
@@ -149,7 +148,7 @@ class Writer:
             subconscious_content=subconscious_content,
             causal_chain_context=causal_chain_context,
             active_characters=self._get_all_character_ids(),
-            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, 'model', ''))),
+            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, "model", ""))),
         )
 
     def _build_think_task_message(
@@ -577,6 +576,7 @@ class Writer:
         model = self.write_model
         if chapter_hint and self.write_model_climax:
             from opennovel.core.chapter_utils import ChapterType, detect_chapter_type
+
             if detect_chapter_type(chapter_hint) == ChapterType.CLIMAX:
                 model = self.write_model_climax
                 logger.info("高潮章节 %s 使用增强模型: %s", chapter_id, model)
@@ -654,6 +654,7 @@ class Writer:
         model = self.write_model
         if chapter_hint and self.write_model_climax:
             from opennovel.core.chapter_utils import ChapterType, detect_chapter_type
+
             if detect_chapter_type(chapter_hint) == ChapterType.CLIMAX:
                 model = self.write_model_climax
                 logger.info("高潮章节 %s 使用增强模型: %s", chapter_id, model)

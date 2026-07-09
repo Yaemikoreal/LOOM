@@ -18,9 +18,7 @@ Phase 3 新增：增量折叠 + MetricsStore 缓存（State Digest）。
 - 不依赖 LLM
 """
 
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from opennovel.schemas.metrics import StateCacheEntry
@@ -123,10 +121,9 @@ class StateProjector:
             # 关系变化
             state.relationships[event.description] = "changed"
 
-        elif event_type == "KNOWLEDGE":
+        elif event_type == "KNOWLEDGE" and event.description not in state.knowledge:
             # 获得知识
-            if event.description not in state.knowledge:
-                state.knowledge.append(event.description)
+            state.knowledge.append(event.description)
 
         # CUSTOM 类型的事件不做特殊处理，由具体项目扩展
 
@@ -142,15 +139,11 @@ class StateProjector:
         parts: list[str] = []
 
         if snapshot.physical:
-            body = ", ".join(
-                f"{k}({v})" for k, v in snapshot.physical.items()
-            )
+            body = ", ".join(f"{k}({v})" for k, v in snapshot.physical.items())
             parts.append(f"  Body: {body}")
 
         if snapshot.emotional:
-            mood = ", ".join(
-                f"{k}={v}" for k, v in snapshot.emotional.items()
-            )
+            mood = ", ".join(f"{k}={v}" for k, v in snapshot.emotional.items())
             parts.append(f"  Mood: {mood}")
 
         if snapshot.inventory:
@@ -165,9 +158,7 @@ class StateProjector:
             parts.append(f"  Location: {snapshot.location}")
 
         if snapshot.relationships:
-            rels = ", ".join(
-                f"{k}({v})" for k, v in snapshot.relationships.items()
-            )
+            rels = ", ".join(f"{k}({v})" for k, v in snapshot.relationships.items())
             parts.append(f"  Relations: {rels}")
 
         if not parts:
@@ -229,7 +220,9 @@ class StateProjector:
             # 部分命中：从缓存 checkpoint 之后增量折叠
             base_state = CharacterStateSnapshot.model_validate_json(cached.state_json)
             new_events = self._event_store.get_events_between(
-                character_id, cached.chapter_id, up_to_chapter,
+                character_id,
+                cached.chapter_id,
+                up_to_chapter,
             )
             if new_events:
                 for evt in new_events:

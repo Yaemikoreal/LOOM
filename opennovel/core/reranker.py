@@ -1,7 +1,7 @@
 """Cross-Encoder 重排序器 — 对 RRF 融合结果进行二次精排。
 
-基于 bge-reranker-v2-m3 模型实现：
-- 类级懒加载：模型在首次调用时加载，后续实例共享
+支持可配置的 Cross-Encoder 模型（默认 bge-reranker-v2-m3，可选 Qwen3-Reranker 等）：
+- 按 (model_name, device) 缓存模型实例，相同配置复用
 - 自动设备检测：cuda → mps → cpu
 - 阈值提前退出：top1 分数显著高于 top2（>2×）时跳过 Reranker
 
@@ -22,65 +22,76 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 类级缓存：模型仅加载一次（threading.Lock 防并发 race）
-_MODEL_INSTANCE: Any = None
-_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
-_DEVICE: str | None = None
+# 模型实例缓存：key=(model_name, device), value=CrossEncoder 实例
+_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+_DEVICE_CACHE: dict[str, str] = {}
 _LOAD_LOCK = threading.Lock()
 
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
-def _detect_device() -> str:
+
+def _detect_device(preference: str = "") -> str:
     """自动检测最佳可用设备。
 
-    优先级：cuda > mps > cpu
+    优先级：preference > cuda > mps > cpu
+
+    Args:
+        preference: 用户指定的设备，非空时优先使用
 
     Returns:
         设备名称字符串
     """
-    global _DEVICE
-    if _DEVICE is not None:
-        return _DEVICE
+    cache_key = preference or "auto"
+    if cache_key in _DEVICE_CACHE:
+        return _DEVICE_CACHE[cache_key]
 
     with _LOAD_LOCK:
-        # 双重检查锁定
-        if _DEVICE is not None:
-            return _DEVICE
-        try:
-            import torch
+        if cache_key in _DEVICE_CACHE:
+            return _DEVICE_CACHE[cache_key]
 
-            if torch.cuda.is_available():
-                _DEVICE = "cuda"
-                logger.info("Reranker 使用 CUDA 设备")
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                _DEVICE = "mps"
-                logger.info("Reranker 使用 MPS 设备")
-            else:
-                _DEVICE = "cpu"
-                logger.info("Reranker 使用 CPU 设备")
-        except ImportError:
-            _DEVICE = "cpu"
-            logger.info("PyTorch 未安装，Reranker 使用 CPU 设备")
+        device = preference
+        if not device:
+            try:
+                import torch
 
-    return _DEVICE
+                if torch.cuda.is_available():
+                    device = "cuda"
+                    logger.info("Reranker 使用 CUDA 设备")
+                elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                    device = "mps"
+                    logger.info("Reranker 使用 MPS 设备")
+                else:
+                    device = "cpu"
+                    logger.info("Reranker 使用 CPU 设备")
+            except ImportError:
+                device = "cpu"
+                logger.info("PyTorch 未安装，Reranker 使用 CPU 设备")
+
+        _DEVICE_CACHE[cache_key] = device
+
+    return device
 
 
-def _get_model() -> Any:
-    """类级懒加载：获取 Cross-Encoder 模型实例。
+def _get_model(model_name: str, device: str) -> Any:
+    """按 (model_name, device) 懒加载 Cross-Encoder 模型实例。
 
-    模型在首次调用时加载，后续调用共享同一实例。
+    相同配置复用同一实例（threading.Lock 防并发 race）。
     若依赖未安装，返回 None。
+
+    Args:
+        model_name: Hugging Face 模型名称
+        device: 计算设备
 
     Returns:
         CrossEncoder 实例，或 None（依赖缺失时）
     """
-    global _MODEL_INSTANCE
-    if _MODEL_INSTANCE is not None:
-        return _MODEL_INSTANCE
+    cache_key = (model_name, device)
+    if cache_key in _MODEL_CACHE:
+        return _MODEL_CACHE[cache_key]
 
     with _LOAD_LOCK:
-        # 双重检查锁定
-        if _MODEL_INSTANCE is not None:
-            return _MODEL_INSTANCE
+        if cache_key in _MODEL_CACHE:
+            return _MODEL_CACHE[cache_key]
 
         # 检查依赖
         if not importlib.util.find_spec("sentence_transformers"):
@@ -88,25 +99,25 @@ def _get_model() -> Any:
                 "sentence-transformers 未安装，无法加载 Reranker。"
                 "请执行: pip install sentence-transformers"
             )
-            _MODEL_INSTANCE = None
+            _MODEL_CACHE[cache_key] = None
             return None
 
         try:
             from sentence_transformers import CrossEncoder
 
-            device = _detect_device()
-            logger.info("加载 Reranker 模型: %s (device=%s)", _MODEL_NAME, device)
-            _MODEL_INSTANCE = CrossEncoder(
-                _MODEL_NAME,
+            logger.info("加载 Reranker 模型: %s (device=%s)", model_name, device)
+            model = CrossEncoder(
+                model_name,
                 device=device,
                 max_length=512,
             )
-            logger.info("Reranker 模型加载完成: %s", _MODEL_NAME)
+            _MODEL_CACHE[cache_key] = model
+            logger.info("Reranker 模型加载完成: %s", model_name)
         except Exception as e:
             logger.error("Reranker 模型加载失败: %s", e)
-            _MODEL_INSTANCE = None
+            _MODEL_CACHE[cache_key] = None
 
-    return _MODEL_INSTANCE
+    return _MODEL_CACHE[cache_key]
 
 
 class Reranker:
@@ -123,9 +134,21 @@ class Reranker:
         indices = reranker.rerank_indices("查询", ["候选1", "候选2"])
     """
 
-    def __init__(self) -> None:
-        """初始化重排序器。模型实例在首次调用时按需加载。"""
-        self._model = _get_model()
+    def __init__(
+        self,
+        model_name: str = DEFAULT_RERANKER_MODEL,
+        device: str = "",
+    ) -> None:
+        """初始化重排序器。
+
+        Args:
+            model_name: Cross-Encoder 模型名称，默认 bge-reranker-v2-m3
+            device: 计算设备，空字符串表示自动检测
+        """
+        self._model_name = model_name or DEFAULT_RERANKER_MODEL
+        self._device_preference = device or ""
+        self._device = _detect_device(self._device_preference)
+        self._model = _get_model(self._model_name, self._device)
 
     @property
     def is_available(self) -> bool:
@@ -133,13 +156,13 @@ class Reranker:
         if self._model is not None:
             return True
         # 尝试重新加载（懒加载）
-        self._model = _get_model()
+        self._model = _get_model(self._model_name, self._device)
         return self._model is not None
 
     @property
     def model_name(self) -> str:
         """获取当前使用的模型名称。"""
-        return _MODEL_NAME
+        return self._model_name
 
     def rerank(
         self,

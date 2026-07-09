@@ -37,6 +37,15 @@ _DEFAULT_ENCODING = "cl100k_base"
 _MAX_CHUNK_TOKENS = 512
 _OVERLAP_TOKENS = 64
 
+# 按文档类型的动态 chunk 大小（P2 支撑长篇）
+# 数值为最大 token 数
+_SOURCE_CHUNK_SIZES: dict[ChunkSource, int] = {
+    ChunkSource.CANON: 384,
+    ChunkSource.CHARACTER: 0,  # 0 表示整卡一个 chunk（特殊处理）
+    ChunkSource.DRAFT: 1024,
+    ChunkSource.SUBCONSCIOUS: 256,
+}
+
 # 句子结束边界正则（中文句号、问号、感叹号，英文句点+空格）
 # 注意：不含 \n，换行已在段落级处理
 _SENTENCE_BOUNDARY = re.compile(r"([。！？]|\.\s)")
@@ -106,8 +115,22 @@ class MarkdownChunker:
         if not text or not text.strip():
             return []
 
+        # 动态 chunk 大小（P2）
+        source_max_tokens = _SOURCE_CHUNK_SIZES.get(source, self.max_chunk_tokens)
+        if source == ChunkSource.CHARACTER:
+            # 角色卡：整卡一个 chunk
+            return [
+                Chunk(
+                    chunk_id=self._make_chunk_id(source.value, doc_stem, 0),
+                    text=text.strip(),
+                    source=source,
+                    metadata=dict(metadata or {}),
+                )
+            ]
+
         meta = dict(metadata or {})
         meta["doc_stem"] = doc_stem
+        meta["max_chunk_tokens"] = source_max_tokens
 
         # 剥离 YAML Frontmatter（--- 之间的元数据块），单独索引
         body = text
@@ -123,12 +146,14 @@ class MarkdownChunker:
 
         # Frontmatter 单独作为 metadata chunk 索引（确保 id/name 可检索）
         if fm_text:
-            chunks.append(Chunk(
-                chunk_id=self._make_chunk_id(source.value, doc_stem, global_index),
-                text=f"[metadata]\n{fm_text}",
-                source=source,
-                metadata={**meta, "type": "frontmatter"},
-            ))
+            chunks.append(
+                Chunk(
+                    chunk_id=self._make_chunk_id(source.value, doc_stem, global_index),
+                    text=f"[metadata]\n{fm_text}",
+                    source=source,
+                    metadata={**meta, "type": "frontmatter"},
+                )
+            )
             global_index += 1
 
         # 正文按 H1 分割为顶级块
@@ -195,10 +220,11 @@ class MarkdownChunker:
         Returns:
             分块列表
         """
+        max_chunk_tokens = meta.get("max_chunk_tokens", self.max_chunk_tokens)
         token_count = self.count_tokens(text)
 
         # 基线条件：未超限，直接作为一个分块
-        if token_count <= self.max_chunk_tokens:
+        if token_count <= max_chunk_tokens:
             chunk_id = self._make_chunk_id(source.value, meta.get("doc_stem", "doc"), start_index)
             return [
                 Chunk(
@@ -369,7 +395,7 @@ class MarkdownChunker:
         if len(tokens) <= self.overlap_tokens:
             return ""
 
-        overlap_tokens_list = tokens[-self.overlap_tokens:]
+        overlap_tokens_list = tokens[-self.overlap_tokens :]
         return self._encoding.decode(overlap_tokens_list).strip()
 
     @staticmethod

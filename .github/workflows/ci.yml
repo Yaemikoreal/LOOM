@@ -47,15 +47,15 @@ jobs:
 
       - name: Check formatting with ruff
         run: |
-          ruff format --check loom/ tests/
+          ruff format --check opennovel/ tests/ scripts/
 
       - name: Lint with ruff
         run: |
-          ruff check loom/ tests/
+          ruff check opennovel/ tests/ scripts/
 
       - name: Type check with mypy
         run: |
-          mypy loom/
+          mypy opennovel/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -87,7 +87,7 @@ jobs:
 
       - name: Run tests with pytest
         run: |
-          pytest --cov=loom --cov-report=xml --cov-report=term-missing -v
+          pytest --cov=opennovel --cov-report=xml --cov-report=term-missing -v
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

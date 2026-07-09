@@ -5,10 +5,13 @@
 """
 
 import concurrent.futures
+import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -16,6 +19,8 @@ from rich.panel import Panel
 from opennovel.agents.critic import Critic
 from opennovel.agents.manager import Manager
 from opennovel.agents.writer import Writer
+from opennovel.core.canon_auditor import CanonAuditResult, LLMCanonAuditor
+from opennovel.core.canon_checker import CanonChecker, CanonRule
 from opennovel.core.chapter_utils import ChapterType, detect_chapter_type
 from opennovel.core.config import LoomConfig
 from opennovel.core.diff_checker import DiffChecker, Mismatch
@@ -167,6 +172,7 @@ class ChapterResult:
     word_count: int = 0
     mismatches: list[Mismatch] = field(default_factory=list)
     manager_skipped: bool = False  # True 表示本次 Manager 更新被延后批处理
+    canon_audit: CanonAuditResult = field(default_factory=CanonAuditResult)
 
 
 @dataclass
@@ -181,6 +187,139 @@ class RunReport:
     end_time: str = ""
     log_lines: list[str] = field(default_factory=list)
     all_mismatches: list[Mismatch] = field(default_factory=list)
+
+
+@dataclass
+class RunLog:
+    """持久化运行日志（断点续跑用）。
+
+    对应 roadmap.md 中 logs/run_{run_id}.json 结构：
+    {
+      "run_id": "run_20250709_001",
+      "novel": "demo_novel",
+      "completed": ["ch_001", "ch_002"],
+      "failed": [],
+      "last_chapter": "ch_002",
+      "status": "running",
+      "created_at": "...",
+      "updated_at": "..."
+    }
+    """
+
+    run_id: str
+    novel: str
+    completed: list[str] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    last_chapter: str | None = None
+    status: str = "running"  # running / completed / failed / paused
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """序列化为字典。"""
+        return {
+            "run_id": self.run_id,
+            "novel": self.novel,
+            "completed": self.completed,
+            "failed": self.failed,
+            "last_chapter": self.last_chapter,
+            "status": self.status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RunLog":
+        """从字典反序列化。"""
+        return cls(
+            run_id=data.get("run_id", ""),
+            novel=data.get("novel", ""),
+            completed=list(data.get("completed", [])),
+            failed=list(data.get("failed", [])),
+            last_chapter=data.get("last_chapter"),
+            status=data.get("status", "running"),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+        )
+
+
+class _RunLogManager:
+    """运行日志管理器：创建、读取、更新 logs/run_{run_id}.json。"""
+
+    def __init__(self, project_root: Path) -> None:
+        self.project_root = project_root
+        self.logs_dir = project_root / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self._current_run: RunLog | None = None
+
+    def start_run(self, novel_name: str) -> RunLog:
+        """开始新的运行日志。"""
+        now = datetime.now()
+        run_id = f"run_{now.strftime('%Y%m%d_%H%M%S')}"
+        timestamp = now.isoformat()
+        run_log = RunLog(
+            run_id=run_id,
+            novel=novel_name,
+            created_at=timestamp,
+            updated_at=timestamp,
+            status="running",
+        )
+        self._current_run = run_log
+        self._save(run_log)
+        return run_log
+
+    def update_run(
+        self,
+        completed: list[str] | None = None,
+        failed: list[str] | None = None,
+        last_chapter: str | None = None,
+        status: str | None = None,
+    ) -> RunLog | None:
+        """更新当前运行日志。"""
+        if self._current_run is None:
+            return None
+        if completed is not None:
+            self._current_run.completed = completed
+        if failed is not None:
+            self._current_run.failed = failed
+        if last_chapter is not None:
+            self._current_run.last_chapter = last_chapter
+        if status is not None:
+            self._current_run.status = status
+        self._current_run.updated_at = datetime.now().isoformat()
+        self._save(self._current_run)
+        return self._current_run
+
+    def finish_run(self, status: str = "completed") -> RunLog | None:
+        """标记当前运行结束。"""
+        return self.update_run(status=status)
+
+    def load_latest_unfinished(self) -> RunLog | None:
+        """加载最近一个未完成的运行日志。"""
+        logs = self._list_run_logs()
+        for path in sorted(logs, reverse=True):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                run_log = RunLog.from_dict(data)
+                if run_log.status in ("running", "paused", "failed"):
+                    self._current_run = run_log
+                    return run_log
+            except Exception as e:
+                logger.warning("读取运行日志失败 %s: %s", path, e)
+        return None
+
+    def _save(self, run_log: RunLog) -> None:
+        """保存运行日志到文件。"""
+        path = self.logs_dir / f"run_{run_log.run_id}.json"
+        path.write_text(
+            json.dumps(run_log.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def _list_run_logs(self) -> list[Path]:
+        """列出所有运行日志文件（按文件名排序，新在后）。"""
+        if not self.logs_dir.exists():
+            return []
+        return sorted(self.logs_dir.glob("run_*.json"))
 
 
 def _proposal_sort_key(
@@ -248,17 +387,23 @@ class AutoRunner:
         report = runner.run(outline_text)
     """
 
-    def __init__(self, project_root: Path, config: LoomConfig) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        config: LoomConfig,
+        log_callback: Callable[[str, str], None] | None = None,
+    ) -> None:
         self.project_root = project_root
         self.config = config
         self.storage = YAMLStorage()
         self.log_lines: list[str] = []
+        self._log_callback = log_callback
 
-        # 指标数据库（Phase 2.2）
-        metrics_path = project_root / ".novel.metrics.db"
+        # 指标数据库（已合并到 .novel.db，P0 架构简化）
+        metrics_path = project_root / ".novel.db"
         self.metrics = MetricsStore(metrics_path)
 
-        # 安全围栏（ADR 0006 — Agent 自治约束边界）
+        # 安全围栏（ADR 0010 — Agent 自治约束边界）
         self.safety_fence = SafetyFence(config.safety_fence)
         if not config.safety_fence.enabled:
             logger.info("安全围栏已禁用")
@@ -266,7 +411,15 @@ class AutoRunner:
         # Prompt 日志目录
         prompt_log_dir = project_root / "debug" / "prompts"
 
-        # 初始化三个 Agent 的 LLMBus（注入 MetricsStore + Prompt 日志）
+        # LLM 输入缓存（P1 成本优化）
+        self._llm_cache: Any | None = None
+        if config.llm_cache_enabled:
+            from opennovel.core.llm_cache import LLMCache
+
+            cache_path = project_root / config.llm_cache_path
+            self._llm_cache = LLMCache(cache_path, enabled=True)
+
+        # 初始化三个 Agent 的 LLMBus（注入 MetricsStore + Prompt 日志 + Cache）
         writer_cfg = config.get_agent_llm_config("writer")
         critic_cfg = config.get_agent_llm_config("critic")
         manager_cfg = config.get_agent_llm_config("manager")
@@ -278,6 +431,7 @@ class AutoRunner:
             metrics_store=self.metrics,
             agent_name="writer",
             prompt_log_dir=prompt_log_dir,
+            llm_cache=self._llm_cache,
         )
         self.critic_bus = LLMBus(
             model=critic_cfg["model"] or config.model,
@@ -286,6 +440,7 @@ class AutoRunner:
             metrics_store=self.metrics,
             agent_name="critic",
             prompt_log_dir=prompt_log_dir,
+            llm_cache=self._llm_cache,
         )
         self.manager_bus = LLMBus(
             model=manager_cfg["model"] or config.model,
@@ -294,6 +449,7 @@ class AutoRunner:
             metrics_store=self.metrics,
             agent_name="manager",
             prompt_log_dir=prompt_log_dir,
+            llm_cache=self._llm_cache,
         )
 
         # 初始化组件
@@ -355,6 +511,7 @@ class AutoRunner:
         self.state_projector: Any | None = None
         if event_store is not None:
             from opennovel.core.state_projector import StateProjector
+
             self.state_projector = StateProjector(event_store, metrics_store=self.metrics)
 
         # Director Agent（可选）
@@ -370,6 +527,7 @@ class AutoRunner:
                 metrics_store=self.metrics,
                 agent_name="director",
                 prompt_log_dir=prompt_log_dir,
+                llm_cache=self._llm_cache,
             )
             self.director = Director(
                 llm_bus=director_bus,
@@ -379,6 +537,26 @@ class AutoRunner:
 
         # 条件管线：延后批处理的 Manager 更新队列
         self._deferred_manager_updates: list[DeferredManagerData] = []
+
+        # 运行日志管理器（P0 断点续跑）
+        self._run_log_manager = _RunLogManager(project_root)
+
+        # 连续章节失败计数器（P0 层级化重试）
+        self._consecutive_failures = 0
+
+        # LLM Canon Auditor（P2，可选，只标记不阻断）
+        self._canon_auditor: LLMCanonAuditor | None = None
+        if self.safety_fence.config.llm_canon_audit_enabled:
+            canon_dir = self.project_root / "canon"
+            rules: list[CanonRule] = []
+            if canon_dir.exists():
+                canon_checker = CanonChecker()
+                rules = canon_checker.load_rules(canon_dir)
+            self._canon_auditor = LLMCanonAuditor(
+                llm_bus=self.critic_bus,
+                rules=rules,
+            )
+            self._log(f"LLM Canon 审计已启用（规则 {len(rules)} 条）", "info")
 
     def _build_or_load_indexes(self, retriever: Retriever) -> None:
         """构建或加载向量索引（canon + subconscious）。
@@ -419,6 +597,10 @@ class AutoRunner:
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_line = f"[{timestamp}] {message}"
         self.log_lines.append(log_line)
+
+        # 如果有日志回调（如 GUI 端），先调用它
+        if self._log_callback is not None:
+            self._log_callback(message, level)
 
         style_map = {"info": "dim", "success": "green", "warning": "yellow", "error": "red"}
         style = style_map.get(level, "dim")
@@ -796,7 +978,7 @@ class AutoRunner:
                     f"知识缺口检测: 发现 {len(needs)} 个需要补充的信息",
                     "info",
                 )
-                results = self.tool_registry.fulfill(needs)
+                results = self.tool_registry.fulfill(needs, agent="writer")
                 filled = [r for r in results if r.content and r.relevance > 0]
                 if filled:
                     additional_knowledge = self.writer.format_knowledge_results(filled)
@@ -825,12 +1007,16 @@ class AutoRunner:
                 if additional_knowledge:
                     enhanced = _OutlineWithKnowledge(outline, additional_knowledge)
                     chapter_text = self.writer.write_with_autonomy(
-                        chapter_id, enhanced, previous_text,
+                        chapter_id,
+                        enhanced,
+                        previous_text,
                         chapter_hint=chapter_hint,
                     )
                 else:
                     chapter_text = self.writer.write_with_autonomy(
-                        chapter_id, outline, previous_text,
+                        chapter_id,
+                        outline,
+                        previous_text,
                         chapter_hint=chapter_hint,
                     )
             else:
@@ -850,7 +1036,9 @@ class AutoRunner:
             if attempt == 0:
                 console.print(f"[bold]📊 Critic 评分[/bold] (第 {attempt + 1} 次，并行模式)")
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    future_critic = executor.submit(self.critic.evaluate, chapter_id, chapter_text, outline)
+                    future_critic = executor.submit(
+                        self.critic.evaluate, chapter_id, chapter_text, outline
+                    )
                     future_analysis = executor.submit(self._analyze_chapter_text, chapter_text)
                     with self.metrics.trace("critic", "evaluate", chapter_id):
                         evaluation = future_critic.result()
@@ -903,7 +1091,7 @@ class AutoRunner:
             self._log(f"不合格 ({evaluation.total_score} 分)，退回修订", "warning")
 
             if evaluation.has_anchored_issues and hasattr(self.writer, "hot_fix"):
-                # 优先局部热修复（ADR 0006 — Agent 自治）
+                # 优先局部热修复（ADR 0010 — Agent 自治）
                 # 安全围栏检查：hot_fix 是自治调用，约束递归深度和 Token
                 if self._check_safety("writer", additional_tokens=2000):
                     anchored_data = [a.model_dump() for a in evaluation.anchored_issues]
@@ -961,7 +1149,7 @@ class AutoRunner:
         chapter_type = detect_chapter_type(chapter_hint)
 
         # Step 4-5: 条件管线分支
-        # 条件跳转（Conditional Jump）— ADR 0006:
+        # 条件跳转（Conditional Jump）— ADR 0010:
         #   评分 >= 90 → 跳过 Manager 实时更新，延后批处理
         if should_skip_manager(best_evaluation):
             self._log(
@@ -1012,11 +1200,19 @@ class AutoRunner:
 
                 # 自动写入章节摘要（零额外 Token，复用 Manager 输出）
                 try:
-                    key_events = [e.description for e in manager_result.events[:10]] if manager_result.events else None
-                    char_changes = [
-                        f"{u.character_id}.{u.field}: {u.value} ({u.reason})"
-                        for u in manager_result.character_updates[:10]
-                    ] if manager_result.character_updates else None
+                    key_events = (
+                        [e.description for e in manager_result.events[:10]]
+                        if manager_result.events
+                        else None
+                    )
+                    char_changes = (
+                        [
+                            f"{u.character_id}.{u.field}: {u.value} ({u.reason})"
+                            for u in manager_result.character_updates[:10]
+                        ]
+                        if manager_result.character_updates
+                        else None
+                    )
                     write_summary(
                         project_root=self.project_root,
                         chapter_id=chapter_id,
@@ -1026,7 +1222,7 @@ class AutoRunner:
                         word_count=word_count,
                         key_events=key_events,
                         character_changes=char_changes,
-                        mismatches=[str(m) for m in chapter_mismatches] if chapter_mismatches else None,
+                        mismatches=None,
                     )
                 except Exception as e:
                     self._log(f"摘要写入失败（不影响创作）: {e}", "warning")
@@ -1087,6 +1283,26 @@ class AutoRunner:
         else:
             self._log("一致性校验通过", "success")
 
+        # LLM Canon 二次审计（P2，只标记不阻断）
+        canon_audit = CanonAuditResult()
+        if self._canon_auditor is not None:
+            try:
+                with self.metrics.trace("canon_auditor", "audit", chapter_id):
+                    canon_audit = self._canon_auditor.audit_text(
+                        best_text,
+                        chapter_id=chapter_id,
+                    )
+                if canon_audit.canon_risk_score > 0 or canon_audit.findings:
+                    self._log(
+                        f"LLM Canon 审计: risk_score={canon_audit.canon_risk_score:.2f}, "
+                        f"发现 {len(canon_audit.findings)} 项风险",
+                        "warning",
+                    )
+                else:
+                    self._log("LLM Canon 审计: 无明显风险", "success")
+            except Exception as e:
+                self._log(f"LLM Canon 审计失败（非阻断）: {e}", "warning")
+
         return ChapterResult(
             chapter_id=chapter_id,
             outline=outline,
@@ -1097,13 +1313,19 @@ class AutoRunner:
             word_count=word_count,
             mismatches=chapter_mismatches,
             manager_skipped=manager_skipped,
+            canon_audit=canon_audit,
         )
 
-    def run(self, outline_text: str) -> RunReport:
+    def run(
+        self,
+        outline_text: str,
+        start_from_chapter: str | None = None,
+    ) -> RunReport:
         """执行完整创作循环。
 
         Args:
             outline_text: 大纲文本 (Markdown 格式)
+            start_from_chapter: 从指定章节 ID 开始（断点续跑用），为空时从头开始
 
         Returns:
             RunReport 完整运行报告
@@ -1116,7 +1338,27 @@ class AutoRunner:
         if len(chapters) > max_chapters:
             chapters = chapters[:max_chapters]
 
+        # 断点续跑：跳过已完成章节
+        skipped_chapters: list[str] = []
+        if start_from_chapter:
+            start_index = next(
+                (i for i, (cid, _) in enumerate(chapters) if cid == start_from_chapter),
+                0,
+            )
+            skipped_chapters = [cid for cid, _ in chapters[:start_index]]
+            chapters = chapters[start_index:]
+            if skipped_chapters:
+                self._log(
+                    f"断点续跑: 跳过 {len(skipped_chapters)} 个已完成章节 "
+                    f"({', '.join(skipped_chapters[-3:])})",
+                    "info",
+                )
+
         report.total_chapters = len(chapters)
+        novel_name = self.project_root.name or "unknown"
+        run_log = self._run_log_manager.start_run(novel_name)
+        self._log(f"运行日志已创建: {run_log.run_id}", "info")
+
         console.print(
             Panel(
                 f"[bold cyan]OpenNovel Auto[/bold cyan] - 三 Agent 自主创作\n"
@@ -1127,6 +1369,8 @@ class AutoRunner:
         )
 
         results: list[ChapterResult] = []
+        completed_chapter_ids: list[str] = list(skipped_chapters)
+        failed_chapter_ids: list[str] = []
         for i, (chapter_id, chapter_hint) in enumerate(chapters):
             console.print(f"\n{'=' * 60}")
             console.print(f"[bold cyan]📖 第 {i + 1}/{len(chapters)} 章: {chapter_id}[/bold cyan]")
@@ -1146,8 +1390,14 @@ class AutoRunner:
                 )
                 results.append(result)
                 report.successful_chapters += 1
+                completed_chapter_ids.append(chapter_id)
+                self._run_log_manager.update_run(
+                    completed=completed_chapter_ids,
+                    failed=failed_chapter_ids,
+                    last_chapter=chapter_id,
+                )
 
-                # Director 全局分析 — 条件路由（ADR 0006）
+                # Director 全局分析 — 条件路由（ADR 0010）
                 #   高潮章节: 强制运行
                 #   过渡章节: 跳过
                 #   日常章节: 每 N 章运行一次
@@ -1205,6 +1455,27 @@ class AutoRunner:
             except Exception as e:
                 self._log(f"章节 {chapter_id} 创作失败: {e}", "error")
                 report.failed_chapters += 1
+                failed_chapter_ids.append(chapter_id)
+                self._consecutive_failures += 1
+                self._run_log_manager.update_run(
+                    completed=completed_chapter_ids,
+                    failed=failed_chapter_ids,
+                    last_chapter=chapter_id,
+                    status="failed",
+                )
+                if self._consecutive_failures >= 3:
+                    self._log(
+                        f"连续 {self._consecutive_failures} 章失败，暂停运行等待人类介入",
+                        "error",
+                    )
+                    self._run_log_manager.finish_run(status="paused")
+                    raise RuntimeError(
+                        f"连续 {self._consecutive_failures} 章创作失败，已暂停"
+                    ) from e
+                continue
+
+            # 单章成功，重置连续失败计数
+            self._consecutive_failures = 0
 
         # ── 批处理延后的 Manager 更新 ──
         if self._deferred_manager_updates:
@@ -1213,7 +1484,7 @@ class AutoRunner:
         # 写入最终时间线
         try:
             write_timeline(self.project_root)
-            self._log(f"时间线已写入: timeline/events.md", "info")
+            self._log("时间线已写入: timeline/events.md", "info")
         except Exception as e:
             self._log(f"时间线写入失败（不影响报告）: {e}", "warning")
 
@@ -1228,7 +1499,48 @@ class AutoRunner:
         # 输出最终报告
         self._print_report(report)
 
+        # 标记运行日志结束状态
+        final_status = "completed" if report.failed_chapters == 0 else "failed"
+        self._run_log_manager.finish_run(status=final_status)
+
         return report
+
+    def resume(self, outline_text: str) -> RunReport:
+        """从最近一个未完成的运行日志断点续跑。
+
+        Args:
+            outline_text: 大纲文本
+
+        Returns:
+            RunReport 完整运行报告
+        """
+        run_log = self._run_log_manager.load_latest_unfinished()
+        if run_log is None:
+            self._log("未找到未完成的运行日志，将从头开始", "warning")
+            return self.run(outline_text)
+
+        self._log(
+            f"断点续跑: 恢复运行 {run_log.run_id}，"
+            f"已完成 {len(run_log.completed)} 章，"
+            f"失败 {len(run_log.failed)} 章",
+            "info",
+        )
+        # 恢复到上一次的最后一个章节之后
+        start_from = run_log.last_chapter
+        if start_from and start_from not in run_log.failed:
+            # 若最后一章已成功完成，从下一章开始
+            chapters = self._parse_outline(outline_text)
+            chapter_ids = [cid for cid, _ in chapters]
+            if start_from in chapter_ids:
+                idx = chapter_ids.index(start_from)
+                if idx + 1 < len(chapter_ids):
+                    start_from = chapter_ids[idx + 1]
+                else:
+                    self._log("运行日志中的最后一章已是最终章，无需续跑", "info")
+                    report = RunReport(start_time=datetime.now().isoformat())
+                    report.total_chapters = 0
+                    return report
+        return self.run(outline_text, start_from_chapter=start_from)
 
     def _write_log(self, report: RunReport) -> None:
         """写入运行日志到 run_log.md。"""

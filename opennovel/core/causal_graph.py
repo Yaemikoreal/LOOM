@@ -12,8 +12,11 @@
 依赖: networkx（可选依赖 phase2，pip install opennovel[phase2]）
 """
 
+import hashlib
 import json
 import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from opennovel.storage.sqlite import EventStore
@@ -28,10 +31,125 @@ class CausalGraphAnalyzer:
     所有方法在 networkx 不可用时返回空值/空列表。
     """
 
+    # 全局因果分析缓存文件名与默认有效期
+    CACHE_FILENAME = ".novel.causal.cache.json"
+    CACHE_TTL_DAYS = 7
+
     def __init__(self, event_store: EventStore | None = None) -> None:
         self._event_store = event_store
         self._graph: Any = None
         self._nx = None  # networkx module reference
+
+    # ── 缓存辅助 ─────────────────────────────────────────────────────────
+
+    def _get_project_root(self, project_root: Path | None = None) -> Path | None:
+        """推断项目根目录。
+
+        优先使用传入的 project_root；否则尝试从 EventStore 的 db_path 推断。
+        """
+        if project_root is not None:
+            return project_root
+        if self._event_store is not None and hasattr(self._event_store, "db_path"):
+            return Path(self._event_store.db_path).parent
+        return None
+
+    def _compute_events_hash(self, events: list[Any]) -> str:
+        """基于事件总数与最新事件 ID 计算简单 hash。
+
+        Args:
+            events: EventLog 列表
+
+        Returns:
+            hash 字符串
+        """
+        count = len(events)
+        latest_id = "none"
+        if events:
+            # 使用自增主键 id 判断最新事件，比 event_id 更稳定
+            # 兼容 mock 对象：id 不存在或不可比较时回退到 event_id
+            def _event_key(e: Any) -> str:
+                # 统一转为字符串比较，避免 int 与 str 混用导致 TypeError
+                eid = getattr(e, "id", None)
+                if eid is not None:
+                    return str(eid)
+                return str(getattr(e, "event_id", ""))
+
+            latest = max(events, key=_event_key)
+            latest_id = str(getattr(latest, "id", None) or getattr(latest, "event_id", "none"))
+        raw = f"{count}:{latest_id}".encode()
+        return hashlib.md5(raw).hexdigest()
+
+    def _get_cache_path(self, project_root: Path) -> Path:
+        """获取缓存文件路径。"""
+        return project_root / self.CACHE_FILENAME
+
+    def _load_cache(self, project_root: Path) -> dict[str, Any] | None:
+        """从磁盘加载缓存。"""
+        cache_path = self._get_cache_path(project_root)
+        if not cache_path.exists():
+            return None
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("读取因果分析缓存失败: %s", e)
+            return None
+
+    def _save_cache(self, project_root: Path, analysis: dict[str, Any], events_hash: str) -> bool:
+        """将分析结果写入磁盘缓存。"""
+        cache_path = self._get_cache_path(project_root)
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "events_hash": events_hash,
+            "analysis": analysis,
+        }
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            return True
+        except OSError as e:
+            logger.warning("写入因果分析缓存失败: %s", e)
+            return False
+
+    def is_cache_valid(self, project_root: Path) -> bool:
+        """检查全局因果分析缓存是否仍有效。
+
+        校验项：
+        - 缓存文件存在且可解析
+        - events_hash 与当前 EventStore 一致
+        - 缓存未超过默认 7 天有效期
+
+        Args:
+            project_root: 项目根目录
+
+        Returns:
+            True 表示缓存有效
+        """
+        cache = self._load_cache(project_root)
+        if cache is None:
+            return False
+
+        # 检查有效期
+        try:
+            cached_time = datetime.fromisoformat(cache.get("timestamp", ""))
+            if cached_time.tzinfo is None:
+                cached_time = cached_time.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - cached_time > timedelta(days=self.CACHE_TTL_DAYS):
+                return False
+        except (ValueError, TypeError):
+            return False
+
+        # 检查事件 hash 一致性
+        if self._event_store is None:
+            return False
+        try:
+            events = self._event_store.get_all_events()
+        except Exception as e:
+            logger.warning("读取事件账本失败: %s", e)
+            return False
+
+        current_hash = self._compute_events_hash(events)
+        return cache.get("events_hash") == current_hash
 
     # ── 图构建 ─────────────────────────────────────────────────────────
 
@@ -49,9 +167,7 @@ class CausalGraphAnalyzer:
             self._nx = nx
             return True
         except ImportError:
-            logger.warning(
-                "networkx 未安装，因果图分析不可用。请执行: pip install networkx"
-            )
+            logger.warning("networkx 未安装，因果图分析不可用。请执行: pip install networkx")
             return False
 
     def build_graph(self) -> bool:
@@ -101,15 +217,14 @@ class CausalGraphAnalyzer:
 
         # 添加有向边（caused_by）
         for event in events:
-            if event.caused_by:
+            if event.caused_by and event.caused_by in self._graph:
                 # caused_by 指向前置事件，边方向：前因 → 后果
-                if event.caused_by in self._graph:
-                    self._graph.add_edge(
-                        event.caused_by,
-                        event.event_id,
-                        relation="causal",
-                        weight=event.causal_pressure,
-                    )
+                self._graph.add_edge(
+                    event.caused_by,
+                    event.event_id,
+                    relation="causal",
+                    weight=event.causal_pressure,
+                )
 
         # 添加无向边（related_event_ids）
         for event in events:
@@ -160,8 +275,7 @@ class CausalGraphAnalyzer:
         if self._graph.number_of_nodes() > 0:
             # 因果压强统计
             pressures = [
-                data.get("causal_pressure", 0.5)
-                for _, data in self._graph.nodes(data=True)
+                data.get("causal_pressure", 0.5) for _, data in self._graph.nodes(data=True)
             ]
             stats["avg_pressure"] = round(sum(pressures) / len(pressures), 2)
             stats["max_pressure"] = round(max(pressures), 2)
@@ -171,7 +285,9 @@ class CausalGraphAnalyzer:
             out_degrees = [d for _, d in self._graph.out_degree()]
             stats["max_in_degree"] = max(in_degrees) if in_degrees else 0
             stats["max_out_degree"] = max(out_degrees) if out_degrees else 0
-            stats["avg_in_degree"] = round(sum(in_degrees) / len(in_degrees), 2) if in_degrees else 0.0
+            stats["avg_in_degree"] = (
+                round(sum(in_degrees) / len(in_degrees), 2) if in_degrees else 0.0
+            )
 
         return stats
 
@@ -390,3 +506,175 @@ class CausalGraphAnalyzer:
 
         result.sort(key=lambda e: -e["causal_pressure"])
         return result
+
+    # ── 全局后台分析 ───────────────────────────────────────────────────
+
+    def run_global_analysis(
+        self,
+        project_root: Path | None = None,
+        use_cache: bool = True,
+        top_k: int = 10,
+    ) -> dict[str, Any]:
+        """执行全局因果图后台分析并缓存结果。
+
+        计算内容：
+        - 图规模统计
+        - 介数中心性（betweenness centrality）
+        - 社区发现（greedy_modularity_communities / label_propagation_communities）
+        - 高风险事件（高因果压强）
+        - 关键路径（DAG 最长路径）
+
+        单角色子图、单事件链等实时查询不经过本方法。
+
+        Args:
+            project_root: 项目根目录；未提供时尝试从 EventStore 推断
+            use_cache: 是否优先使用缓存
+            top_k: 返回的核心事件数量
+
+        Returns:
+            分析结果字典；networkx 不可用或图未构建时返回降级结果
+        """
+        root = self._get_project_root(project_root)
+
+        # 尝试读取缓存
+        if use_cache and root is not None and self.is_cache_valid(root):
+            cache = self._load_cache(root)
+            if cache and "analysis" in cache:
+                logger.info("命中因果分析缓存")
+                return cache["analysis"]
+
+        # 构建图
+        if self._graph is None and not self.build_graph():
+            return {"error": "图构建失败", "nodes": 0, "edges": 0}
+
+        if not self._ensure_import() or self._nx is None:
+            return {"error": "networkx 未安装", "nodes": 0, "edges": 0}
+
+        nx = self._nx
+        graph = self._graph
+
+        analysis: dict[str, Any] = {
+            "nodes": graph.number_of_nodes(),
+            "edges": graph.number_of_edges(),
+            "is_dag": nx.is_directed_acyclic_graph(graph) if graph else False,
+        }
+
+        if graph is None or graph.number_of_nodes() == 0:
+            analysis["central_events"] = []
+            analysis["communities"] = []
+            analysis["high_impact_events"] = []
+            analysis["critical_path"] = []
+            analysis["risk_score"] = 0.0
+            self._maybe_save_cache(root, analysis)
+            return analysis
+
+        # 1. 中心性分析
+        try:
+            betweenness = nx.betweenness_centrality(graph, weight="weight")
+            sorted_nodes = sorted(betweenness.items(), key=lambda x: -x[1])[:top_k]
+            analysis["central_events"] = [
+                {
+                    "event_id": nid,
+                    "betweenness": round(centrality, 4),
+                    "description": graph.nodes[nid].get("description", ""),
+                }
+                for nid, centrality in sorted_nodes
+                if centrality > 0
+            ]
+        except Exception as e:
+            logger.warning("中心性计算失败: %s", e)
+            analysis["central_events"] = []
+
+        # 2. 社区发现（在底层无向图上进行）
+        analysis["communities"] = self._detect_communities(graph, nx)
+
+        # 3. 高风险事件
+        analysis["high_impact_events"] = self.get_high_impact_events(threshold=0.7)[:top_k]
+
+        # 4. 关键路径：DAG 最长路径
+        try:
+            if analysis["is_dag"]:
+                critical_path = nx.dag_longest_path(graph)
+                analysis["critical_path"] = critical_path
+                analysis["critical_path_length"] = len(critical_path)
+            else:
+                # 非 DAG 时退化为按出度排序的关键节点链
+                critical_path = sorted(
+                    graph.nodes(),
+                    key=lambda n: graph.out_degree(n),
+                    reverse=True,
+                )[:top_k]
+                analysis["critical_path"] = critical_path
+                analysis["critical_path_length"] = len(critical_path)
+        except Exception as e:
+            logger.warning("关键路径计算失败: %s", e)
+            analysis["critical_path"] = []
+            analysis["critical_path_length"] = 0
+
+        # 5. 聚合风险分数：高风险事件占比 + 中心性集中度
+        high_impact_count = len(analysis["high_impact_events"])
+        risk_score = min(
+            1.0,
+            high_impact_count / max(1, graph.number_of_nodes())
+            + 0.1 * len(analysis["communities"]),
+        )
+        analysis["risk_score"] = round(risk_score, 4)
+        analysis["community_count"] = len(analysis["communities"])
+
+        self._maybe_save_cache(root, analysis)
+        return analysis
+
+    def _maybe_save_cache(self, project_root: Path | None, analysis: dict[str, Any]) -> None:
+        """保存缓存（如果项目根目录已知）。"""
+        if project_root is None or self._event_store is None:
+            return
+        try:
+            events = self._event_store.get_all_events()
+            events_hash = self._compute_events_hash(events)
+            self._save_cache(project_root, analysis, events_hash)
+        except Exception as e:
+            logger.warning("保存因果分析缓存失败: %s", e)
+
+    def _detect_communities(self, graph: Any, nx: Any) -> list[list[str]]:
+        """执行社区发现，优先使用 greedy_modularity，失败后回退 label_propagation。
+
+        Args:
+            graph: networkx 图对象
+            nx: networkx 模块
+
+        Returns:
+            社区列表，每个社区是事件 ID 列表
+        """
+        if graph.number_of_nodes() < 2:
+            return []
+
+        undirected = graph.to_undirected()
+        communities: list[list[str]] = []
+
+        try:
+            if hasattr(nx, "community") and hasattr(nx.community, "greedy_modularity_communities"):
+                for community in nx.community.greedy_modularity_communities(
+                    undirected, weight="weight"
+                ):
+                    communities.append(sorted(community))
+                return communities
+        except Exception as e:
+            logger.warning("greedy_modularity_communities 失败: %s", e)
+
+        try:
+            if hasattr(nx, "community") and hasattr(nx.community, "label_propagation_communities"):
+                for community in nx.community.label_propagation_communities(undirected):
+                    communities.append(sorted(community))
+                # 去重
+                seen: set[str] = set()
+                unique: list[list[str]] = []
+                for comm in communities:
+                    key = ",".join(comm)
+                    if key not in seen:
+                        seen.add(key)
+                        unique.append(comm)
+                return unique
+        except Exception as e:
+            logger.warning("label_propagation_communities 失败: %s", e)
+
+        return []

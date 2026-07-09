@@ -177,7 +177,7 @@ def commit(
     # 更新时间线
     try:
         write_timeline(project_root)
-        rprint(f"  [green]✓[/green] 时间线已更新")
+        rprint("  [green]✓[/green] 时间线已更新")
     except Exception as e:
         rprint(f"  [yellow]时间线写入失败: {e}[/yellow]")
 
@@ -189,7 +189,9 @@ def commit(
 
         # 更新章节内容
         fts5.incremental_update_file(
-            chapter_path, "draft", {"chapter_id": chapter_id},
+            chapter_path,
+            "draft",
+            {"chapter_id": chapter_id},
         )
 
         # 更新角色状态
@@ -197,9 +199,11 @@ def commit(
             char_path = project_root / "characters" / f"{char_id}.md"
             if char_path.exists():
                 fts5.incremental_update_file(
-                    char_path, "character", {"character_id": char_id},
+                    char_path,
+                    "character",
+                    {"character_id": char_id},
                 )
 
-        rprint(f"  [green]✓[/green] 搜索索引已增量更新")
+        rprint("  [green]✓[/green] 搜索索引已增量更新")
     except Exception as e:
         rprint(f"  [yellow]搜索索引更新失败: {e}[/yellow]")

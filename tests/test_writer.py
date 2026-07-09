@@ -10,7 +10,6 @@ import pytest
 from opennovel.agents.writer import Writer
 from opennovel.schemas.knowledge import KnowledgeResult, KnowledgeSource
 from opennovel.schemas.outline import ChapterOutline
-from opennovel.storage.yaml_storage import YAMLStorage
 
 # ── Mock LiteLLM 响应对象（属性访问模式）──
 
@@ -592,9 +591,25 @@ class TestWriterParseOutline:
 
     def test_parse_json_with_markdown_block(self, empty_project_root: Path) -> None:
         """测试解析被 markdown 代码块包裹的 JSON。"""
-        text = """```json
-{"chapter_id": "ch_001", "title": "test", "summary": "测试概要", "scenes": [{"scene_id": "s1", "description": "d", "characters_involved": ["char_001"], "emotional_tone": "t", "estimated_words": 100}], "character_arcs": {}, "key_plot_points": [], "narrative_rhythm": "r", "target_words": 1000}
-```"""
+        payload = {
+            "chapter_id": "ch_001",
+            "title": "test",
+            "summary": "测试概要",
+            "scenes": [
+                {
+                    "scene_id": "s1",
+                    "description": "d",
+                    "characters_involved": ["char_001"],
+                    "emotional_tone": "t",
+                    "estimated_words": 100,
+                }
+            ],
+            "character_arcs": {},
+            "key_plot_points": [],
+            "narrative_rhythm": "r",
+            "target_words": 1000,
+        }
+        text = f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
         bus = MagicMock()
         ret = MagicMock()
         writer = Writer(llm_bus=bus, retriever=ret, project_root=empty_project_root)
@@ -618,7 +633,9 @@ class TestWriterParseOutline:
         ret = MagicMock()
         writer = Writer(llm_bus=bus, retriever=ret, project_root=empty_project_root)
 
-        with pytest.raises(Exception):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
             writer._parse_outline_from_text(text, "ch_001")
 
 
@@ -728,7 +745,13 @@ class TestWriterHotFix:
             "ch_001",
             sample_outline,
             long_chapter_text,
-            [{"quote": "这段文本不在正文中任何一个段落里出现", "problem": "测试", "suggestion": "测试"}],
+            [
+                {
+                    "quote": "这段文本不在正文中任何一个段落里出现",
+                    "problem": "测试",
+                    "suggestion": "测试",
+                }
+            ],
         )
 
         assert result is None
@@ -764,7 +787,15 @@ class TestWriterHotFix:
             retriever=ret,
             project_root=empty_project_root,
         )
-        assert writer.hot_fix("ch_001", sample_outline, "", [{"quote": "测试", "problem": "测试", "suggestion": "测试"}]) is None
+        assert (
+            writer.hot_fix(
+                "ch_001",
+                sample_outline,
+                "",
+                [{"quote": "测试", "problem": "测试", "suggestion": "测试"}],
+            )
+            is None
+        )
 
     def test_find_paragraph_around_finds_correct_paragraph(
         self,
@@ -937,13 +968,15 @@ class TestWriterKnowledgeGaps:
             chapter_id="ch_001",
             title="相遇",
             summary="角色相遇",
-            scenes=[{
-                "scene_id": "s1",
-                "description": "主角在森林中遇到神秘女子",
-                "characters_involved": ["char_001", "char_002"],
-                "emotional_tone": "紧张",
-                "estimated_words": 1000,
-            }],
+            scenes=[
+                {
+                    "scene_id": "s1",
+                    "description": "主角在森林中遇到神秘女子",
+                    "characters_involved": ["char_001", "char_002"],
+                    "emotional_tone": "紧张",
+                    "estimated_words": 1000,
+                }
+            ],
             character_arcs={"char_001": "从恐惧到勇敢", "char_002": "神秘莫测"},
             key_plot_points=["相遇"],
             narrative_rhythm="平缓",
@@ -965,13 +998,15 @@ class TestWriterKnowledgeGaps:
             chapter_id="ch_001",
             title="相遇",
             summary="测试",
-            scenes=[{
-                "scene_id": "s1",
-                "description": "测试场景",
-                "characters_involved": ["char_001"],
-                "emotional_tone": "平静",
-                "estimated_words": 500,
-            }],
+            scenes=[
+                {
+                    "scene_id": "s1",
+                    "description": "测试场景",
+                    "characters_involved": ["char_001"],
+                    "emotional_tone": "平静",
+                    "estimated_words": 500,
+                }
+            ],
             character_arcs={"char_001": "保持"},
             key_plot_points=["测试"],
             narrative_rhythm="平缓",
@@ -992,13 +1027,15 @@ class TestWriterKnowledgeGaps:
             chapter_id="ch_001",
             title="测试",
             summary="关于魔法的故事",
-            scenes=[{
-                "scene_id": "s1",
-                "description": "主角使用古老的魔法，触发了诅咒",
-                "characters_involved": ["char_001"],
-                "emotional_tone": "神秘",
-                "estimated_words": 800,
-            }],
+            scenes=[
+                {
+                    "scene_id": "s1",
+                    "description": "主角使用古老的魔法，触发了诅咒",
+                    "characters_involved": ["char_001"],
+                    "emotional_tone": "神秘",
+                    "estimated_words": 800,
+                }
+            ],
             character_arcs={"char_001": "觉醒"},
             key_plot_points=["使用魔法"],
             narrative_rhythm="平缓",
@@ -1024,8 +1061,18 @@ class TestWriterKnowledgeGaps:
         writer = Writer(llm_bus=bus, retriever=ret, project_root=empty_project_root)
 
         results = [
-            KnowledgeResult(content="魔法消耗寿命", source=KnowledgeSource.CANON, concept="魔法", relevance=1.0),
-            KnowledgeResult(content="艾伦处于恐惧状态", source=KnowledgeSource.CHARACTER, concept="char_001", relevance=1.0),
+            KnowledgeResult(
+                content="魔法消耗寿命",
+                source=KnowledgeSource.CANON,
+                concept="魔法",
+                relevance=1.0,
+            ),
+            KnowledgeResult(
+                content="艾伦处于恐惧状态",
+                source=KnowledgeSource.CHARACTER,
+                concept="char_001",
+                relevance=1.0,
+            ),
         ]
 
         formatted = writer.format_knowledge_results(results)
@@ -1041,15 +1088,27 @@ class TestWriterKnowledgeGaps:
         writer = Writer(llm_bus=bus, retriever=ret, project_root=empty_project_root)
 
         results = [
-            KnowledgeResult(content="相关内容", source=KnowledgeSource.CANON, concept="测试", relevance=1.0),
-            KnowledgeResult(content="", source=KnowledgeSource.SUBCONSCIOUS, concept="空结果", relevance=0.0),
+            KnowledgeResult(
+                content="相关内容",
+                source=KnowledgeSource.CANON,
+                concept="测试",
+                relevance=1.0,
+            ),
+            KnowledgeResult(
+                content="",
+                source=KnowledgeSource.SUBCONSCIOUS,
+                concept="空结果",
+                relevance=0.0,
+            ),
         ]
 
         formatted = writer.format_knowledge_results(results)
         assert "相关内容" in formatted
         assert "空结果" not in formatted  # 相关性 0 不被包含
 
-    def test_write_with_additional_knowledge(self, empty_project_root: Path, sample_outline: ChapterOutline) -> None:
+    def test_write_with_additional_knowledge(
+        self, empty_project_root: Path, sample_outline: ChapterOutline
+    ) -> None:
         """测试 write 方法接收 additional_knowledge 参数。"""
         llm_bus = MockLLMBus(["# 相遇\n\n正文内容。"])
         ret = MagicMock()
@@ -1081,23 +1140,35 @@ class TestWriterStageModels:
     @pytest.fixture
     def cheap_outline(self) -> str:
         """廉价模型生成的简单大纲。"""
-        return json.dumps({
-            "chapter_id": "ch_001",
-            "title": "相遇",
-            "summary": "简单概要",
-            "scenes": [{"scene_id": "s1", "description": "场景", "characters_involved": ["char_001"], "emotional_tone": "平静", "estimated_words": 500}],
-            "character_arcs": {},
-            "key_plot_points": [],
-            "narrative_rhythm": "平缓",
-            "target_words": 1000,
-        })
+        return json.dumps(
+            {
+                "chapter_id": "ch_001",
+                "title": "相遇",
+                "summary": "简单概要",
+                "scenes": [
+                    {
+                        "scene_id": "s1",
+                        "description": "场景",
+                        "characters_involved": ["char_001"],
+                        "emotional_tone": "平静",
+                        "estimated_words": 500,
+                    }
+                ],
+                "character_arcs": {},
+                "key_plot_points": [],
+                "narrative_rhythm": "平缓",
+                "target_words": 1000,
+            }
+        )
 
     def test_writer_stores_stage_models(self, empty_project_root: Path) -> None:
         """测试 Writer 存储阶段模型参数。"""
         bus = MagicMock()
         ret = MagicMock()
         writer = Writer(
-            llm_bus=bus, retriever=ret, project_root=empty_project_root,
+            llm_bus=bus,
+            retriever=ret,
+            project_root=empty_project_root,
             think_model="cheap-model",
             write_model="main-model",
             revise_model="main-model",
@@ -1111,7 +1182,9 @@ class TestWriterStageModels:
         bus = MagicMock()
         ret = MagicMock()
         writer = Writer(
-            llm_bus=bus, retriever=ret, project_root=empty_project_root,
+            llm_bus=bus,
+            retriever=ret,
+            project_root=empty_project_root,
             think_model="cheap-model",
         )
         # write_model 未设置 → 继承 think_model
@@ -1119,9 +1192,7 @@ class TestWriterStageModels:
         # revise_model 未设置 → 继承 write_model → 继承 think_model
         assert writer.revise_model == "cheap-model"
 
-    def test_think_uses_think_model(
-        self, empty_project_root: Path, cheap_outline: str
-    ) -> None:
+    def test_think_uses_think_model(self, empty_project_root: Path, cheap_outline: str) -> None:
         """测试 think 阶段使用 think_model。"""
         llm_bus = MockLLMBus([cheap_outline])
         ret = MagicMock()

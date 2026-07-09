@@ -680,9 +680,20 @@ class TestCriticParseEvaluation:
 
     def test_parse_json_with_markdown_block(self, empty_project_root: Path) -> None:
         """测试解析被 markdown 代码块包裹的 JSON。"""
-        text = """```json
-{"total_score": 80, "dimensions": [{"dimension": "文笔质量", "score": 16, "comment": "ok"}, {"dimension": "情节逻辑", "score": 16, "comment": "ok"}, {"dimension": "角色一致性", "score": 16, "comment": "ok"}, {"dimension": "节奏把控", "score": 16, "comment": "ok"}, {"dimension": "情感表达", "score": 16, "comment": "ok"}], "summary": "ok", "issues": [], "suggestions": []}
-```"""
+        payload = {
+            "total_score": 80,
+            "dimensions": [
+                {"dimension": "文笔质量", "score": 16, "comment": "ok"},
+                {"dimension": "情节逻辑", "score": 16, "comment": "ok"},
+                {"dimension": "角色一致性", "score": 16, "comment": "ok"},
+                {"dimension": "节奏把控", "score": 16, "comment": "ok"},
+                {"dimension": "情感表达", "score": 16, "comment": "ok"},
+            ],
+            "summary": "ok",
+            "issues": [],
+            "suggestions": [],
+        }
+        text = f"```json\n{json.dumps(payload, ensure_ascii=False)}\n```"
         bus = MagicMock()
         critic = Critic(llm_bus=bus, project_root=empty_project_root)
 
@@ -703,5 +714,7 @@ class TestCriticParseEvaluation:
         bus = MagicMock()
         critic = Critic(llm_bus=bus, project_root=empty_project_root)
 
-        with pytest.raises(Exception):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
             critic._parse_evaluation_from_text(text)

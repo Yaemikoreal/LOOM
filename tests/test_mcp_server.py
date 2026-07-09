@@ -1,8 +1,6 @@
 """LOOM MCP Server 测试。"""
 
-import asyncio
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,8 +18,15 @@ class TestListTools:
     """list_tools 测试。"""
 
     _EXPECTED_TOOLS = {
-        "init_project", "get_status", "write_chapter", "auto_create",
-        "commit", "stash", "diff", "doctor", "foreshadow",
+        "init_project",
+        "get_status",
+        "write_chapter",
+        "auto_create",
+        "commit",
+        "stash",
+        "diff",
+        "doctor",
+        "foreshadow",
     }
 
     @pytest.mark.anyio

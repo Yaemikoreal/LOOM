@@ -67,19 +67,31 @@ class VectorStore:
         self,
         project_root: Path,
         index_dir: Path | None = None,
-        embedding_model: str = "local:BAAI/bge-m3",
+        embedding_model: str | None = None,
     ) -> None:
         """初始化向量存储。
 
         Args:
             project_root: 项目根目录路径
             index_dir: 索引持久化目录，默认为 project_root / ".index"
-            embedding_model: Embedding 模型名称
+            embedding_model: Embedding 模型名称。未指定时从 novel.yaml 读取，
+                            回退到默认 "local:BAAI/bge-m3"。
         """
         self.project_root = project_root
         self.index_dir = index_dir or project_root / ".index"
-        self.embedding_model = embedding_model
+        self.embedding_model = embedding_model or self._load_embedding_model(project_root)
         self._index = None
+
+    @staticmethod
+    def _load_embedding_model(project_root: Path) -> str:
+        """从项目配置加载 embedding 模型，失败时回退到默认值。"""
+        try:
+            from opennovel.core.config import LoomConfig
+
+            cfg = LoomConfig.load(project_root)
+            return cfg.embedding_model
+        except Exception:
+            return "local:BAAI/bge-m3"
 
     def build_index(self, documents_dir: Path) -> None:
         """从 Markdown 文档目录构建向量索引。

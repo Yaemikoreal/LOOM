@@ -13,10 +13,10 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+from opennovel.core.causal_graph import CausalGraphAnalyzer
 from opennovel.core.config import LoomConfig
 from opennovel.storage.metrics import MetricsStore
 from opennovel.storage.sqlite import EventStore
@@ -308,6 +308,118 @@ class Doctor:
 
         return items
 
+    def diagnose_causal(self) -> list[DiagnosticItem]:
+        """执行全局因果图诊断。
+
+        调用 CausalGraphAnalyzer.run_global_analysis() 获取后台分析结果，
+        并转化为诊断项：图规模、高风险事件数、关键事件、社区数等。
+
+        Returns:
+            诊断结果列表
+        """
+        items: list[DiagnosticItem] = []
+        db_path = self.project_root / ".novel.db"
+        if not db_path.exists():
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message="事件账本不存在，跳过因果图诊断",
+                )
+            )
+            return items
+
+        try:
+            store = EventStore(db_path)
+            analyzer = CausalGraphAnalyzer(store)
+            result = analyzer.run_global_analysis(project_root=self.project_root, use_cache=True)
+        except Exception as e:
+            logger.warning("因果图分析失败: %s", e)
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message=f"因果图分析失败: {e}",
+                )
+            )
+            return items
+
+        # 图规模
+        nodes = result.get("nodes", 0)
+        edges = result.get("edges", 0)
+        if "error" in result:
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message=f"因果图分析不可用: {result['error']}",
+                    details=f"节点: {nodes}, 边: {edges}",
+                )
+            )
+            return items
+
+        items.append(
+            DiagnosticItem(
+                level=DiagnosticLevel.OK,
+                category="causal_graph",
+                message=f"因果图规模: {nodes} 个事件, {edges} 条关系",
+                details=f"是否 DAG: {result.get('is_dag', False)}",
+            )
+        )
+
+        # 高风险事件
+        high_impact = result.get("high_impact_events", [])
+        if high_impact:
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.WARNING,
+                    category="causal_graph",
+                    message=f"检测到 {len(high_impact)} 个高风险事件",
+                    details="前 3: " + ", ".join(e.get("event_id", "") for e in high_impact[:3]),
+                )
+            )
+
+        # 关键事件（中心性最高）
+        central = result.get("central_events", [])
+        if central:
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message=(
+                        f"关键事件: {central[0]['event_id']} "
+                        f"(betweenness={central[0]['betweenness']})"
+                    ),
+                    details="前 3: " + ", ".join(e.get("event_id", "") for e in central[:3]),
+                )
+            )
+
+        # 社区数
+        community_count = result.get("community_count", 0)
+        if community_count > 0:
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message=f"社区发现完成: 共 {community_count} 个社区",
+                    details=f"风险分数: {result.get('risk_score', 0.0)}",
+                )
+            )
+
+        # 关键路径
+        critical_path = result.get("critical_path", [])
+        if critical_path:
+            items.append(
+                DiagnosticItem(
+                    level=DiagnosticLevel.INFO,
+                    category="causal_graph",
+                    message=f"关键路径长度: {len(critical_path)}",
+                    details="起点: " + critical_path[0] if critical_path else "",
+                )
+            )
+
+        return items
+
     def generate_dashboard(self) -> dict:
         """生成项目健康面板数据。
 
@@ -369,8 +481,8 @@ class Doctor:
         except Exception:
             dashboard["events"] = {"total": 0, "types": []}
 
-        # ── 评分趋势面板（仅当 metrics.db 存在时） ──
-        metrics_path = self.project_root / ".novel.metrics.db"
+        # ── 评分趋势面板（已合并到 .novel.db） ──
+        metrics_path = self.project_root / ".novel.db"
         if metrics_path.exists():
             try:
                 ms = MetricsStore(metrics_path)
@@ -412,5 +524,25 @@ class Doctor:
                 for i in items
             ],
         }
+
+        # ── 因果图面板（可选） ──
+        try:
+            causal_items = self.diagnose_causal()
+            dashboard["causal"] = {
+                "total": len(causal_items),
+                "warnings": sum(1 for i in causal_items if i.level == DiagnosticLevel.WARNING),
+                "info": sum(1 for i in causal_items if i.level == DiagnosticLevel.INFO),
+                "items": [
+                    {
+                        "level": i.level.value,
+                        "category": i.category,
+                        "message": i.message,
+                        "details": i.details,
+                    }
+                    for i in causal_items
+                ],
+            }
+        except Exception:
+            dashboard["causal"] = {"total": 0, "error": "读取失败"}
 
         return dashboard

@@ -172,10 +172,7 @@ class ForeshadowStore:
             # 检测表格开始
             if stripped.startswith("| ID |"):
                 in_table = True
-                headers = [
-                    h.strip().lower()
-                    for h in stripped.strip("|").split("|")
-                ]
+                headers = [h.strip().lower() for h in stripped.strip("|").split("|")]
                 continue
 
             # 跳过表格分隔行
@@ -237,7 +234,9 @@ class ForeshadowStore:
                 buried_chapter=data.get("埋设章节", data.get("buried_chapter", "")),
                 status=fore_status,
                 related_character_ids=[
-                    c.strip() for c in data.get("关联角色", "").replace("，", ",").split(",") if c.strip()
+                    c.strip()
+                    for c in data.get("关联角色", "").replace("，", ",").split(",")
+                    if c.strip()
                 ],
                 expected_close_chapter=data.get("预计回收", data.get("expected_close_chapter", "")),
                 notes=data.get("备注", data.get("notes", "")),
@@ -266,16 +265,15 @@ class ForeshadowStore:
         buried = sum(1 for i in state.items if i.status == ForeshadowStatus.BURIED)
         in_progress = sum(1 for i in state.items if i.status == ForeshadowStatus.IN_PROGRESS)
         closed = sum(1 for i in state.items if i.status == ForeshadowStatus.CLOSED)
-        lines.append(f"\n**统计**: 共 {total} 条 | 已埋设 {buried} | 推进中 {in_progress} | 已收束 {closed}\n")
+        lines.append(
+            f"\n**统计**: 共 {total} 条 | 已埋设 {buried} | "
+            f"推进中 {in_progress} | 已收束 {closed}\n"
+        )
 
         # 伏笔状态表
         lines.append("## 伏笔状态表\n")
-        lines.append(
-            "| ID | 类型 | 描述 | 埋设章节 | 状态 | 关联角色 | 预计回收 | 备注 |"
-        )
-        lines.append(
-            "|----|------|------|----------|------|----------|----------|------|"
-        )
+        lines.append("| ID | 类型 | 描述 | 埋设章节 | 状态 | 关联角色 | 预计回收 | 备注 |")
+        lines.append("|----|------|------|----------|------|----------|----------|------|")
 
         for item in state.items:
             cn_type = _CN_TYPE.get(item.type, item.type.value)

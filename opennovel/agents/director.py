@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 
 from opennovel.core.context_assembler import (
-    ContextStrategy,
     assemble_context,
     detect_strategy,
     get_model_window,
@@ -74,9 +73,7 @@ class Director:
             return
 
         lines = []
-        lines.append(
-            f"\n---\n## 分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        )
+        lines.append(f"\n---\n## 分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
         lines.append(f"- **节奏评估**: {analysis.pacing_assessment}")
         lines.append(f"- **张力曲线**: {analysis.tension_curve}")
         if analysis.character_arc_status:
@@ -316,7 +313,7 @@ foreshadowing_items（可选，伏笔检测结果列表）。
             project_root=self.project_root,
             task_message=task_message,
             prompt_path=self.prompt_path,
-            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, 'model', ''))),
+            strategy=detect_strategy(get_model_window(getattr(self.llm_bus, "model", ""))),
         )
 
         last_error = None

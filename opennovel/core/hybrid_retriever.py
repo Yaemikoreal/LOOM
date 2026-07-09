@@ -110,42 +110,59 @@ class HybridRetriever:
 
         # 无 pipeline 时回退到旧实现
         from opennovel.schemas.search import (
-            Chunk, ChunkSource, RerankedChunk, RetrievalResult as NewRetrievalResult,
+            Chunk,
+            ChunkSource,
+            RerankedChunk,
         )
+        from opennovel.schemas.search import (
+            RetrievalResult as NewRetrievalResult,
+        )
+
         result = self.query_narrative_context(
-            query_text, chapter_id=chapter_id, character_ids=character_ids,
+            query_text,
+            chapter_id=chapter_id,
+            character_ids=character_ids,
         )
         chunks: list[RerankedChunk] = []
         rank = 0
         if result.canon_content:
-            chunks.append(RerankedChunk(
-                chunk=Chunk(
-                    chunk_id="canon_legacy_p0000",
-                    text=result.canon_content,
-                    source=ChunkSource.CANON,
-                ),
-                rrf_score=1.0, rank=rank,
-            ))
+            chunks.append(
+                RerankedChunk(
+                    chunk=Chunk(
+                        chunk_id="canon_legacy_p0000",
+                        text=result.canon_content,
+                        source=ChunkSource.CANON,
+                    ),
+                    rrf_score=1.0,
+                    rank=rank,
+                )
+            )
             rank += 1
         if result.subconscious_content:
-            chunks.append(RerankedChunk(
-                chunk=Chunk(
-                    chunk_id="subconscious_legacy_p0000",
-                    text=result.subconscious_content,
-                    source=ChunkSource.SUBCONSCIOUS,
-                ),
-                rrf_score=0.5, rank=rank,
-            ))
+            chunks.append(
+                RerankedChunk(
+                    chunk=Chunk(
+                        chunk_id="subconscious_legacy_p0000",
+                        text=result.subconscious_content,
+                        source=ChunkSource.SUBCONSCIOUS,
+                    ),
+                    rrf_score=0.5,
+                    rank=rank,
+                )
+            )
             rank += 1
         if result.causal_chain_context:
-            chunks.append(RerankedChunk(
-                chunk=Chunk(
-                    chunk_id="events_legacy_p0000",
-                    text=result.causal_chain_context,
-                    source=ChunkSource.EVENT,
-                ),
-                rrf_score=0.3, rank=rank,
-            ))
+            chunks.append(
+                RerankedChunk(
+                    chunk=Chunk(
+                        chunk_id="events_legacy_p0000",
+                        text=result.causal_chain_context,
+                        source=ChunkSource.EVENT,
+                    ),
+                    rrf_score=0.3,
+                    rank=rank,
+                )
+            )
         return NewRetrievalResult(chunks=chunks)
 
     # ── 旧接口（保留 Gen1 兼容性） ────────────────────────────────
@@ -179,8 +196,8 @@ class HybridRetriever:
         # ── SQL 精确召回 ──
         if self.event_store:
             try:
-                result.high_pressure_events = (
-                    self.event_store.get_high_pressure_events(pressure_threshold)
+                result.high_pressure_events = self.event_store.get_high_pressure_events(
+                    pressure_threshold
                 )
                 if character_ids:
                     for char_id in character_ids:
@@ -194,9 +211,7 @@ class HybridRetriever:
 
         # ── 向量语义检索 ──
         try:
-            result.canon_content = self.retriever.query_canon(
-                query_text[:500], top_k=top_k_canon
-            )
+            result.canon_content = self.retriever.query_canon(query_text[:500], top_k=top_k_canon)
             result.subconscious_content = self.retriever.query_subconscious(
                 query_text[:500], top_k=top_k_subconscious
             )
@@ -241,9 +256,7 @@ class HybridRetriever:
             pressure_threshold=0.3,
         )
 
-    def _build_causal_chain_context(
-        self, events: list[EventLog], limit: int = 10
-    ) -> str:
+    def _build_causal_chain_context(self, events: list[EventLog], limit: int = 10) -> str:
         """将事件列表格式化为因果链上下文文本。
 
         Args:

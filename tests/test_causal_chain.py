@@ -10,12 +10,9 @@
 
 import json
 
-import pytest
-
 from opennovel.schemas.event import EventCreate, EventLog, EventType
 from opennovel.schemas.manager_update import EventRecord, ManagerUpdateResult
 from opennovel.storage.sqlite import EventStore
-
 
 # ── Schema 测试 ──────────────────────────────────────────────────────
 
@@ -484,24 +481,43 @@ class TestEventStoreCausalChain:
 
         events = [
             EventCreate(
-                event_id="A", chapter_id="ch_001", timestamp="t1",
-                character_id="char_001", event_type=EventType.CUSTOM,
-                description="A", causal_pressure=0.9,
+                event_id="A",
+                chapter_id="ch_001",
+                timestamp="t1",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="A",
+                causal_pressure=0.9,
             ),
             EventCreate(
-                event_id="B", chapter_id="ch_001", timestamp="t2",
-                character_id="char_001", event_type=EventType.CUSTOM,
-                description="B", causal_pressure=0.7, caused_by="A",
+                event_id="B",
+                chapter_id="ch_001",
+                timestamp="t2",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="B",
+                causal_pressure=0.7,
+                caused_by="A",
             ),
             EventCreate(
-                event_id="C", chapter_id="ch_001", timestamp="t2",
-                character_id="char_002", event_type=EventType.CUSTOM,
-                description="C", causal_pressure=0.7, caused_by="A",
+                event_id="C",
+                chapter_id="ch_001",
+                timestamp="t2",
+                character_id="char_002",
+                event_type=EventType.CUSTOM,
+                description="C",
+                causal_pressure=0.7,
+                caused_by="A",
             ),
             EventCreate(
-                event_id="D", chapter_id="ch_001", timestamp="t3",
-                character_id="char_001", event_type=EventType.CUSTOM,
-                description="D", causal_pressure=0.8, caused_by="B",
+                event_id="D",
+                chapter_id="ch_001",
+                timestamp="t3",
+                character_id="char_001",
+                event_type=EventType.CUSTOM,
+                description="D",
+                causal_pressure=0.8,
+                caused_by="B",
             ),
         ]
         store.add_events_batch(events)

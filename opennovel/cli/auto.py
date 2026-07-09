@@ -20,6 +20,7 @@ def auto(
     path: str = typer.Argument(".", help="项目路径"),
     chapters: int | None = typer.Option(None, "--chapters", "-n", help="覆盖章节数"),
     dry_run: bool = typer.Option(False, "--dry-run", help="只运行 Writer 思考，不实际创作"),
+    resume: bool = typer.Option(False, "--resume", help="从最近未完成的运行日志断点续跑"),
 ) -> None:
     """三 Agent 自主创作: Writer思考→创作→Critic评分→Manager更新。"""
     from pathlib import Path
@@ -68,6 +69,7 @@ def auto(
     if dry_run:
         rprint("[bold yellow]Dry Run 模式[/bold yellow] - 仅测试大纲解析")
         from opennovel.core.auto_runner import parse_outline_from_text
+
         chapters_parsed = parse_outline_from_text(outline_text)
         for i, (cid, hint) in enumerate(chapters_parsed[: config.target_chapters], 1):
             rprint(f"  {i}. {cid}: {hint[:60]}...")
@@ -76,7 +78,7 @@ def auto(
 
     # 执行创作循环
     runner = AutoRunner(project_root, config)
-    report = runner.run(outline_text)
+    report = runner.resume(outline_text) if resume else runner.run(outline_text)
 
     if report.failed_chapters > 0:
         rprint(f"\n[bold yellow]完成，但有 {report.failed_chapters} 章失败[/bold yellow]")

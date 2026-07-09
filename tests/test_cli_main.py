@@ -201,3 +201,71 @@ class TestDoctorCommand:
         output = result.output
         has_ok = "健康" in output or "0 个 ERROR" in output
         assert has_ok or "0 个 WARNING" in output
+
+    def test_doctor_causal_flag(self, tmp_path: Path) -> None:
+        """测试 --causal 标志触发因果图诊断。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / "characters").mkdir()
+        (project_dir / "draft").mkdir()
+        (project_dir / ".snapshots").mkdir()
+
+        result = runner.invoke(app, ["doctor", "--causal", str(project_dir)])
+        assert result.exit_code == 0
+        # 无事件账本时应提示跳过或显示无信息
+        assert "因果" in result.output or "无因果" in result.output or "不存在" in result.output
+
+
+class TestSnapshotCleanupCommand:
+    """novel snapshot cleanup 命令测试。"""
+
+    def _create_snapshot_file(
+        self, snapshots_dir: Path, name: str, mtime_offset_days: float = 0
+    ) -> None:
+        """构造一个空快照文件并设置 mtime。"""
+        import os
+        import time
+
+        snap_path = snapshots_dir / name
+        snap_path.write_bytes(b'{"snapshot_id": "test", "delta_files": {}}')
+        new_mtime = time.time() - mtime_offset_days * 86400
+        os.utime(snap_path, (new_mtime, new_mtime))
+
+    def test_snapshot_cleanup_no_snapshots(self, tmp_path: Path) -> None:
+        """测试无快照时正常退出。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".snapshots").mkdir()
+
+        result = runner.invoke(app, ["snapshot", "cleanup", str(project_dir)])
+        assert result.exit_code == 0
+        assert "0 个过期快照" in result.output
+
+    def test_snapshot_cleanup_archives_old(self, tmp_path: Path) -> None:
+        """测试清理命令归档过期快照。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        snapshots_dir = project_dir / ".snapshots"
+        snapshots_dir.mkdir()
+
+        for i in range(5):
+            self._create_snapshot_file(
+                snapshots_dir, f"snap_{i}.snapshot.json", mtime_offset_days=i
+            )
+
+        result = runner.invoke(
+            app, ["snapshot", "cleanup", str(project_dir), "--max-count", "2", "--max-days", "1"]
+        )
+        assert result.exit_code == 0, f"output={result.output}"
+        # 保留最近 2 个且 1 天内的并集 = snap_0, snap_1，其余 3 个归档
+        assert "3 个过期快照" in result.output
+        assert len(list(snapshots_dir.glob("*.snapshot.json"))) == 2
+
+    def test_snapshot_cleanup_invalid_args(self, tmp_path: Path) -> None:
+        """测试非法参数被拒绝。"""
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".snapshots").mkdir()
+
+        result = runner.invoke(app, ["snapshot", "cleanup", str(project_dir), "--max-count", "0"])
+        assert result.exit_code != 0

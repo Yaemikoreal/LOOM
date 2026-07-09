@@ -8,13 +8,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from opennovel.agents.critic import Critic
 from opennovel.agents.writer import Writer
 from opennovel.core.auto_runner import AutoRunner, ChapterResult
 from opennovel.schemas.evaluation import ChapterEvaluation, DimensionScore
 from opennovel.schemas.outline import ChapterOutline, SceneBreakdown
 from opennovel.schemas.outline_evaluation import OutlineEvaluation
-
 
 # ── 辅助工具 ──
 
@@ -124,7 +122,13 @@ class TestThinkVariations:
 
     def test_returns_n_outlines(self, tmp_path: Path) -> None:
         """返回指定数量的大纲。"""
-        outline_json = '{"chapter_id": "ch_001", "title": "t", "summary": "s", "scenes": [{"scene_id": "s1", "description": "d", "characters_involved": ["char_001"], "emotional_tone": "t", "estimated_words": 100}], "character_arcs": {}, "key_plot_points": [], "narrative_rhythm": "r", "target_words": 1000}'
+        outline_json = (
+            '{"chapter_id": "ch_001", "title": "t", "summary": "s", '
+            '"scenes": [{"scene_id": "s1", "description": "d", '
+            '"characters_involved": ["char_001"], "emotional_tone": "t", '
+            '"estimated_words": 100}], "character_arcs": {}, '
+            '"key_plot_points": [], "narrative_rhythm": "r", "target_words": 1000}'
+        )
         bus = MockLLMBus([outline_json, outline_json, outline_json])
         ret = MagicMock()
         ret.query_canon.return_value = ""
@@ -138,7 +142,13 @@ class TestThinkVariations:
 
     def test_exploratory_mode_uses_different_temperatures(self, tmp_path: Path) -> None:
         """探索型变异使用不同 temperature（通过调用次数验证）。"""
-        outline_json = '{"chapter_id": "ch_001", "title": "t", "summary": "s", "scenes": [{"scene_id": "s1", "description": "d", "characters_involved": ["char_001"], "emotional_tone": "t", "estimated_words": 100}], "character_arcs": {}, "key_plot_points": [], "narrative_rhythm": "r", "target_words": 1000}'
+        outline_json = (
+            '{"chapter_id": "ch_001", "title": "t", "summary": "s", '
+            '"scenes": [{"scene_id": "s1", "description": "d", '
+            '"characters_involved": ["char_001"], "emotional_tone": "t", '
+            '"estimated_words": 100}], "character_arcs": {}, '
+            '"key_plot_points": [], "narrative_rhythm": "r", "target_words": 1000}'
+        )
         bus = MockLLMBus([outline_json, outline_json, outline_json])
         ret = MagicMock()
         ret.query_canon.return_value = ""

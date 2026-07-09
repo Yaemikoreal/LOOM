@@ -8,6 +8,7 @@
 - Prompt 日志记录（可选）
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -57,6 +58,7 @@ class LLMBus:
         metrics_store: Any = None,
         agent_name: str = "",
         prompt_log_dir: Path | None = None,
+        llm_cache: Any = None,
     ) -> None:
         """初始化 LLM 总线。
 
@@ -70,6 +72,7 @@ class LLMBus:
             metrics_store: 指标数据库实例（可选，用于自动记录 token 消耗）
             agent_name: Agent 名称（配合 metrics_store 使用）
             prompt_log_dir: Prompt 日志目录（可选，记录每次 LLM 调用的完整 Prompt）
+            llm_cache: LLM 缓存实例（可选，用于缓存重复调用）
         """
         self.model = model
         self.default_max_tokens = default_max_tokens
@@ -80,6 +83,7 @@ class LLMBus:
         self.metrics_store = metrics_store
         self.agent_name = agent_name
         self.prompt_log_dir = prompt_log_dir
+        self.llm_cache = llm_cache
 
     @retry(
         retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
@@ -119,6 +123,23 @@ class LLMBus:
             call_kwargs["api_key"] = self.api_key
         call_kwargs.update(kwargs)
 
+        # ── LLM 输入缓存（P1 成本优化） ──
+        cache_key: str | None = None
+        if self.llm_cache is not None:
+            from opennovel.core.llm_cache import LLMCache
+
+            resolved_model = model or self.model
+            resolved_temperature = call_kwargs["temperature"]
+            cache_key = LLMCache.make_key(resolved_model, messages, resolved_temperature)
+            cached = self.llm_cache.get(cache_key)
+            if cached is not None:
+                logger.debug("LLM 缓存命中: model=%s", resolved_model)
+                # 构造一个兼容 LiteLLM 响应格式的对象
+                response_text = cached.get("content", "")
+                self._log_prompt(messages, resolved_model, response_text)
+                self._record_usage(cached, resolved_model, kwargs.get("chapter_id", ""))
+                return cached
+
         response = completion(**call_kwargs)
         logger.debug(
             "LLM 调用完成: model=%s, usage=%s",
@@ -127,13 +148,25 @@ class LLMBus:
         )
         # 记录 Prompt 日志
         response_text = ""
-        try:
+        with contextlib.suppress(AttributeError, IndexError):
             response_text = response.choices[0].message.content or ""
-        except (AttributeError, IndexError):
-            pass
         self._log_prompt(messages, model or self.model, response_text)
 
         self._record_usage(response, model or self.model, kwargs.get("chapter_id", ""))
+
+        # 写入缓存
+        if self.llm_cache is not None and cache_key is not None:
+            try:
+                self.llm_cache.set(
+                    cache_key,
+                    response,
+                    model=model or self.model,
+                    prompt_hash=cache_key.split(":")[1],
+                    temperature=call_kwargs["temperature"],
+                )
+            except Exception as e:
+                logger.debug("LLM 缓存写入失败: %s", e)
+
         return response
 
     def chat_stream(
@@ -361,9 +394,7 @@ class LLMBus:
         except Exception as e:
             logger.debug("推理链日志写入失败: %s", e)
 
-    def _record_usage(
-        self, response: Any, model: str, chapter_id: str = ""
-    ) -> None:
+    def _record_usage(self, response: Any, model: str, chapter_id: str = "") -> None:
         """记录 token 使用量到指标数据库。"""
         if not self.metrics_store or not self.agent_name:
             return

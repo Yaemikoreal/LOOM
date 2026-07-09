@@ -31,30 +31,42 @@ class Retriever:
         self,
         project_root: Path,
         persist_dir: Path | None = None,
-        embedding_model: str = "local:BAAI/bge-m3",
+        embedding_model: str | None = None,
     ) -> None:
         """初始化检索路由器。
 
         Args:
             project_root: 项目根目录路径
             persist_dir: 索引持久化目录，默认为 project_root / ".index"
-            embedding_model: Embedding 模型名称
+            embedding_model: Embedding 模型名称。未指定时从 novel.yaml 读取，
+                            回退到默认 "local:BAAI/bge-m3"。
         """
         self.project_root = project_root
         self._index_dir = persist_dir or project_root / ".index"
-        self._embedding_model = embedding_model
+        self._embedding_model = embedding_model or self._load_embedding_model(project_root)
 
         # 两个独立的 VectorStore 实例
         self._canon_store = VectorStore(
             project_root,
             index_dir=self._index_dir / "canon",
-            embedding_model=embedding_model,
+            embedding_model=self._embedding_model,
         )
         self._subconscious_store = VectorStore(
             project_root,
             index_dir=self._index_dir / "subconscious",
-            embedding_model=embedding_model,
+            embedding_model=self._embedding_model,
         )
+
+    @staticmethod
+    def _load_embedding_model(project_root: Path) -> str:
+        """从项目配置加载 embedding 模型，失败时回退到默认值。"""
+        try:
+            from opennovel.core.config import LoomConfig
+
+            cfg = LoomConfig.load(project_root)
+            return cfg.embedding_model
+        except Exception:
+            return "local:BAAI/bge-m3"
 
     def build_canon_index(self) -> None:
         """构建设定文档的语义索引。

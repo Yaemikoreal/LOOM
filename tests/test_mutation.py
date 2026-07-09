@@ -9,18 +9,16 @@
 - Writer think_variations 结构性变异集成
 """
 
-import pytest
-
 from opennovel.core.mutation_strategy import (
     build_mutation_prompt_hint,
     select_mutation_plan,
 )
 from opennovel.schemas.evaluation import ChapterEvaluation, DimensionScore
 from opennovel.schemas.mutation import (
+    TEMPLATES,
     MutationDimension,
     MutationPlan,
     StructuralTemplate,
-    TEMPLATES,
     get_template,
     get_templates_by_dimension,
 )
@@ -78,9 +76,7 @@ class TestStructuralTemplate:
 
     def test_get_templates_by_dimension(self):
         """按维度获取模板列表。"""
-        structure_templates = get_templates_by_dimension(
-            MutationDimension.NARRATIVE_STRUCTURE
-        )
+        structure_templates = get_templates_by_dimension(MutationDimension.NARRATIVE_STRUCTURE)
         assert len(structure_templates) >= 2
 
 
@@ -216,10 +212,15 @@ class TestWriterStructuralVariation:
         from unittest.mock import MagicMock
 
         from opennovel.agents.writer import Writer
-        from opennovel.core.retriever import Retriever
 
         # Mock LLM 返回合法的大纲 JSON
-        outline_json = '{"chapter_id": "ch_001", "title": "测试", "summary": "摘要", "scenes": [{"scene_id": "s1", "description": "场景", "characters_involved": ["char_001"], "emotional_tone": "紧张", "estimated_words": 1000}], "character_arcs": {}, "key_plot_points": [], "narrative_rhythm": "快", "target_words": 1000}'
+        outline_json = (
+            '{"chapter_id": "ch_001", "title": "测试", "summary": "摘要", '
+            '"scenes": [{"scene_id": "s1", "description": "场景", '
+            '"characters_involved": ["char_001"], "emotional_tone": "紧张", '
+            '"estimated_words": 1000}], "character_arcs": {}, '
+            '"key_plot_points": [], "narrative_rhythm": "快", "target_words": 1000}'
+        )
 
         mock_bus = MagicMock()
         mock_response = MagicMock()

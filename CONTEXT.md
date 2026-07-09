@@ -228,7 +228,11 @@ Agent 自治的子特性，Critic 发现局部硬伤时触发 Writer 的段落�
 **Batch Manager Update** (批处理 Manager 更新):
 条件跳转的配套机制。被跳过的 Manager 实时更新暂存于 `_deferred_manager_updates` 队列，在 `run()` 末尾通过 `_process_deferred_manager_updates()` 批量处理。处理结果回填到对应的 `ChapterResult`，并清除 `manager_skipped` 标志。批处理失败不中断整体流程。
 
-### 人机交互层
+### 人机交互层（已废弃）
+
+> 以下术语均属于已删除的 V3.0 GUI（Tauri 2 + React + FastAPI）。当前 OpenNovel 无 GUI，仅保留 CLI 与 MCP Server。术语表保留这些条目仅作历史参考，避免阅读旧文档时产生困惑。
+>
+> 注意：`desktop/`、`opennovel/api/`、`launch_desktop_v3.py`、`novel-desktop-v3.bat`、`docs/gui-visual-design-guide.md` 均已删除；ADR-0008 已标记为 Superseded。
 
 **Human-AI Co-creation Cockpit** (人机共创驾驶舱):
 V3.0 桌面端基于 Tauri 2 + React 19 + TypeScript + FastAPI 重写（`desktop/` + `opennovel/api/`），替代已删除的 V2 PySide6 GUI。详见 `docs/adr/0008-gui-v3-architecture.md`。通信架构：单持久 WebSocket（多路复用 task_id）用于 Agent 操作，REST 用于 CRUD。前端 17 个 Zustand 状态 store，后端 FastAPI 8765 端口。启动方式：`python launch_desktop_v3.py` 或 `novel-desktop-v3.bat`。

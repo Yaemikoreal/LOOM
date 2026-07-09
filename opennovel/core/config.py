@@ -7,7 +7,7 @@
 - per-agent LLM 配置覆盖
 - 配置 Schema 校验（字段类型/范围/格式）
 
-三层模型路由（ADR 0006 — Agent 自治基础设施）：
+三层模型路由（ADR 0010 — Agent 自治基础设施）：
     novel.yaml agents.writer.model → novel.yaml model → .opennovel.yaml default_model → 硬编码
 
 使用方式:
@@ -24,10 +24,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError as PydanticValidationError
+from pydantic import BaseModel, Field
+from pydantic import ValidationError as PydanticValidationError
 
 from opennovel.core.global_config import DEFAULT_MODEL, GlobalConfig
-from opennovel.core.safety_fence import SafetyFenceConfig as _SafetyFenceConfig
+from opennovel.core.safety_fence import (
+    DEFAULT_TOOL_PERMISSIONS,
+)
+from opennovel.core.safety_fence import (
+    SafetyFenceConfig as _SafetyFenceConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,7 @@ class _NovelConfigSchema(BaseModel):
     agents: dict[str, dict] = Field(default_factory=dict)
 
     # 搜索配置 (ADR 0007)
+    embedding_model: str | None = None
     reranker_enabled: bool | None = None
     reranker_model: str | None = None
     reranker_device: str | None = None
@@ -69,6 +76,17 @@ class _NovelConfigSchema(BaseModel):
     # Agent 自治配置 (Phase 3)
     supports_native_tool_use: bool | None = None
     max_tool_call_history: int | None = Field(default=None, ge=1, le=50)
+
+    # 安全围栏配置 (ADR 0010)
+    safety_fence: dict | None = None
+
+    # LLM 输入缓存配置 (P1)
+    llm_cache_enabled: bool | None = None
+    llm_cache_path: str | None = None
+
+    # 快照清理策略 (P3)
+    snapshot_max_count: int | None = Field(default=None, ge=1, le=10000)
+    snapshot_max_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class ConfigValidationError(Exception):
@@ -97,6 +115,7 @@ class ConfigValidationError(Exception):
             parts.append(f"  - [{loc}] {err['msg']} ({err['type']})")
         return "\n".join(parts)
 
+
 # 默认配置值
 DEFAULT_TOKEN_BUDGET = 8000
 DEFAULT_OUTPUT_RESERVE = 2000
@@ -108,7 +127,7 @@ class AgentConfig:
     """单个 Agent 的 LLM 配置覆盖。
 
     未设置的字段继承 LoomConfig 的默认值。
-    支持 stage 级模型路由（ADR 0005 执行层成本优化器）：
+    支持 stage 级模型路由（ADR 0009 执行层成本优化器）：
     - think_model: 思考阶段用便宜模型（如 gpt-4o-mini）
     - write_model: 创作阶段用主力模型（如 gpt-4）
     - revise_model: 修订阶段用主力模型（不设置则继承 model）
@@ -166,10 +185,11 @@ class LoomConfig:
     # Director 配置
     director_enabled: bool = True
 
-    # 安全围栏配置 (ADR 0006)
+    # 安全围栏配置 (ADR 0010)
     safety_fence: _SafetyFenceConfig = field(default_factory=_SafetyFenceConfig)
 
     # 搜索配置 (ADR 0007 — 混合语义-关键词检索 + 重排序)
+    embedding_model: str = "local:BAAI/bge-m3"  # 语义检索嵌入模型
     reranker_enabled: bool = True
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_device: str = ""  # 空字符串 = 自动检测 (cuda > mps > cpu)
@@ -178,6 +198,14 @@ class LoomConfig:
     # Agent 自治配置 (Phase 3)
     supports_native_tool_use: bool = False
     max_tool_call_history: int = 5
+
+    # LLM 输入缓存配置 (P1)
+    llm_cache_enabled: bool = True
+    llm_cache_path: str = ".novel.cache.db"
+
+    # 快照清理策略 (P3)
+    snapshot_max_count: int = 50
+    snapshot_max_days: int = 30
 
     extra: dict = field(default_factory=dict)
 
@@ -249,15 +277,17 @@ class LoomConfig:
 
         # Schema 校验：在解析前验证字段类型和范围
         try:
-            validated = _NovelConfigSchema(**data)
+            _NovelConfigSchema(**data)
         except PydanticValidationError as e:
             errors = []
             for err in e.errors():
-                errors.append({
-                    "loc": err["loc"],
-                    "msg": err["msg"],
-                    "type": err["type"],
-                })
+                errors.append(
+                    {
+                        "loc": err["loc"],
+                        "msg": err["msg"],
+                        "type": err["type"],
+                    }
+                )
             raise ConfigValidationError(
                 errors=errors,
                 config_path=str(config_path),
@@ -284,12 +314,18 @@ class LoomConfig:
             "words_per_chapter",
             "outline",
             "director_enabled",
+            "embedding_model",
             "reranker_enabled",
             "reranker_model",
             "reranker_device",
             "search_top_k",
             "supports_native_tool_use",
             "max_tool_call_history",
+            "safety_fence",
+            "llm_cache_enabled",
+            "llm_cache_path",
+            "snapshot_max_count",
+            "snapshot_max_days",
         }
         extra = {k: v for k, v in data.items() if k not in known_keys}
 
@@ -298,6 +334,10 @@ class LoomConfig:
 
         # 三层 fallback 解析 api_base
         api_base = data.get("api_base") or global_cfg.default_api_base
+
+        # 解析安全围栏配置：用户配置与默认权限矩阵 safe-merge
+        safety_fence_data = data.get("safety_fence") or {}
+        safety_fence = _parse_safety_fence_config(safety_fence_data)
 
         return cls(
             version=str(data.get("version", DEFAULT_VERSION)),
@@ -315,12 +355,18 @@ class LoomConfig:
             agent_manager=agent_manager,
             agent_director=agent_director,
             director_enabled=bool(data.get("director_enabled", True)),
+            embedding_model=str(data.get("embedding_model", "local:BAAI/bge-m3")),
             reranker_enabled=bool(data.get("reranker_enabled", True)),
             reranker_model=str(data.get("reranker_model", "BAAI/bge-reranker-v2-m3")),
             reranker_device=str(data.get("reranker_device", "")),
             search_top_k=int(data.get("search_top_k", 5)),
             supports_native_tool_use=bool(data.get("supports_native_tool_use", False)),
             max_tool_call_history=int(data.get("max_tool_call_history", 5)),
+            safety_fence=safety_fence,
+            llm_cache_enabled=bool(data.get("llm_cache_enabled", True)),
+            llm_cache_path=str(data.get("llm_cache_path", ".novel.cache.db")),
+            snapshot_max_count=int(data.get("snapshot_max_count", 50)),
+            snapshot_max_days=int(data.get("snapshot_max_days", 30)),
             extra=extra,
         )
 
@@ -353,6 +399,8 @@ class LoomConfig:
         data["director_enabled"] = self.director_enabled
 
         # 搜索配置 (ADR 0007)
+        if self.embedding_model != "local:BAAI/bge-m3":
+            data["embedding_model"] = self.embedding_model
         data["reranker_enabled"] = self.reranker_enabled
         if self.reranker_model != "BAAI/bge-reranker-v2-m3":
             data["reranker_model"] = self.reranker_model
@@ -364,6 +412,29 @@ class LoomConfig:
         data["supports_native_tool_use"] = self.supports_native_tool_use
         if self.max_tool_call_history != 5:
             data["max_tool_call_history"] = self.max_tool_call_history
+
+        # LLM 输入缓存配置（P1）
+        if not self.llm_cache_enabled:
+            data["llm_cache_enabled"] = self.llm_cache_enabled
+        if self.llm_cache_path != ".novel.cache.db":
+            data["llm_cache_path"] = self.llm_cache_path
+
+        # 快照清理策略（P3，仅保存非默认值）
+        if self.snapshot_max_count != 50:
+            data["snapshot_max_count"] = self.snapshot_max_count
+        if self.snapshot_max_days != 30:
+            data["snapshot_max_days"] = self.snapshot_max_days
+
+        # 安全围栏配置（仅保存非默认值或用户自定义部分）
+        sf_data: dict = {}
+        if self.safety_fence.forbidden_modifications:
+            sf_data["forbidden_modifications"] = self.safety_fence.forbidden_modifications
+        if self.safety_fence.tool_permissions:
+            sf_data["tool_permissions"] = self.safety_fence.tool_permissions
+        if self.safety_fence.llm_canon_audit_enabled:
+            sf_data["llm_canon_audit_enabled"] = self.safety_fence.llm_canon_audit_enabled
+        if sf_data:
+            data["safety_fence"] = sf_data
 
         # per-agent 配置
         agents: dict = {}
@@ -420,4 +491,50 @@ def _parse_agent_config(data: dict) -> AgentConfig:
         write_model=data.get("write_model"),
         write_model_climax=data.get("write_model_climax"),
         revise_model=data.get("revise_model"),
+    )
+
+
+def _parse_safety_fence_config(data: dict) -> _SafetyFenceConfig:
+    """从 YAML 数据解析 SafetyFenceConfig，并与默认权限矩阵 safe-merge。
+
+    合并规则：
+    - 用户未提供 tool_permissions 时，使用 DEFAULT_TOOL_PERMISSIONS。
+    - 用户提供了某个 agent 的权限时，完全覆盖该 agent 的默认权限（不逐字段合并）。
+    - 其他安全围栏字段（max_recursion_depth 等）按用户值覆盖默认值。
+
+    Args:
+        data: YAML 中 safety_fence 字段的值
+
+    Returns:
+        SafetyFenceConfig 实例
+    """
+    if not data:
+        return _SafetyFenceConfig(tool_permissions=dict(DEFAULT_TOOL_PERMISSIONS))
+
+    tool_permissions: dict[str, dict[str, list[str]]] = dict(DEFAULT_TOOL_PERMISSIONS)
+    user_tool_permissions = data.get("tool_permissions") or {}
+    for agent, perms in user_tool_permissions.items():
+        if isinstance(perms, dict):
+            tool_permissions[agent] = {
+                "allowed": list(perms.get("allowed", [])),
+                "disallowed": list(perms.get("disallowed", [])),
+            }
+
+    return _SafetyFenceConfig(
+        max_recursion_depth=int(
+            data.get("max_recursion_depth", _SafetyFenceConfig().max_recursion_depth)
+        ),
+        max_tokens_per_call=int(
+            data.get("max_tokens_per_call", _SafetyFenceConfig().max_tokens_per_call)
+        ),
+        timeout_seconds=int(data.get("timeout_seconds", _SafetyFenceConfig().timeout_seconds)),
+        forbidden_modifications=list(
+            data.get("forbidden_modifications", _SafetyFenceConfig().forbidden_modifications)
+        ),
+        canon_dir=data.get("canon_dir", _SafetyFenceConfig().canon_dir),
+        enabled=bool(data.get("enabled", _SafetyFenceConfig().enabled)),
+        llm_canon_audit_enabled=bool(
+            data.get("llm_canon_audit_enabled", _SafetyFenceConfig().llm_canon_audit_enabled)
+        ),
+        tool_permissions=tool_permissions,
     )

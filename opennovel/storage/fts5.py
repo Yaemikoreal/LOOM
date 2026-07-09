@@ -176,8 +176,14 @@ class Fts5Store:
                     """INSERT OR REPLACE INTO chunks
                        (chunk_id, source, doc_stem, text, metadata, created_at)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (chunk.chunk_id, chunk.source.value, chunk.metadata.get("doc_stem", "doc"),
-                     chunk.text, meta_json, now),
+                    (
+                        chunk.chunk_id,
+                        chunk.source.value,
+                        chunk.metadata.get("doc_stem", "doc"),
+                        chunk.text,
+                        meta_json,
+                        now,
+                    ),
                 )
                 fts5_text = self._cjk_space(chunk.text)
                 self.conn.execute(
@@ -193,7 +199,10 @@ class Fts5Store:
         return count
 
     def incremental_update_file(
-        self, file_path: Path, source: str, metadata: dict | None = None,
+        self,
+        file_path: Path,
+        source: str,
+        metadata: dict | None = None,
     ) -> int:
         """增量更新单个文件的 FTS5 索引（分块 → 批量写入）。
 
@@ -211,16 +220,18 @@ class Fts5Store:
         from opennovel.schemas.search import ChunkSource
 
         source_enum = (
-            ChunkSource(source)
-            if source in {s.value for s in ChunkSource}
-            else ChunkSource.CANON
+            ChunkSource(source) if source in {s.value for s in ChunkSource} else ChunkSource.CANON
         )
         chunker = MarkdownChunker()
         chunks = chunker.chunk_file(file_path, source_enum, metadata)
         return self.add_chunks_batch(chunks)
 
     def incremental_update_text(
-        self, text: str, source: str, doc_stem: str, metadata: dict | None = None,
+        self,
+        text: str,
+        source: str,
+        doc_stem: str,
+        metadata: dict | None = None,
     ) -> int:
         """增量更新文本的 FTS5 索引。
 
@@ -237,9 +248,7 @@ class Fts5Store:
         from opennovel.schemas.search import ChunkSource
 
         source_enum = (
-            ChunkSource(source)
-            if source in {s.value for s in ChunkSource}
-            else ChunkSource.CANON
+            ChunkSource(source) if source in {s.value for s in ChunkSource} else ChunkSource.CANON
         )
         chunker = MarkdownChunker()
         chunks = chunker.chunk_document(text, source_enum, doc_stem, metadata)
@@ -327,15 +336,17 @@ class Fts5Store:
 
         results: list[dict[str, Any]] = []
         for rank, row in enumerate(rows):
-            results.append({
-                "chunk_id": row["chunk_id"],
-                "text": row["text"],
-                "source": row["source"],
-                "doc_stem": row["doc_stem"],
-                "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
-                "rank": rank,
-                "score": float(row["score"]),
-            })
+            results.append(
+                {
+                    "chunk_id": row["chunk_id"],
+                    "text": row["text"],
+                    "source": row["source"],
+                    "doc_stem": row["doc_stem"],
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                    "rank": rank,
+                    "score": float(row["score"]),
+                }
+            )
 
         return results
 
@@ -348,9 +359,7 @@ class Fts5Store:
         Returns:
             分块数据字典，不存在返回 None
         """
-        row = self.conn.execute(
-            "SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM chunks WHERE chunk_id = ?", (chunk_id,)).fetchone()
         if row is None:
             return None
         return {
@@ -398,9 +407,7 @@ class Fts5Store:
         Returns:
             元数据值，不存在返回 None
         """
-        row = self.conn.execute(
-            "SELECT value FROM search_meta WHERE key = ?", (key,)
-        ).fetchone()
+        row = self.conn.execute("SELECT value FROM search_meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else None
 
     def set_meta(self, key: str, value: str) -> None:

@@ -4,7 +4,7 @@ Writer 在创作过程中检测到知识缺口时，通过 KnowledgeNeed 向
 AutoRunner 申请额外的上下文信息，AutoRunner 通过 ToolRegistry
 查询对应的数据源并将结果注入 Writer 的后续调用上下文。
 
-详见 ADR 0006 — Agent Autonomy（Agent 自治）。
+详见 ADR 0010 — Agent Autonomy（Agent 自治）。
 """
 
 from enum import Enum
@@ -27,6 +27,9 @@ class KnowledgeSource(str, Enum):
     EVENT = "event"
     """事件账本中的历史事件。"""
 
+    CAUSAL_CHAIN = "causal_chain"
+    """事件因果链（SQL 递归追溯）。"""
+
 
 class KnowledgeNeed(BaseModel):
     """Writer 的知识缺口描述。
@@ -39,9 +42,7 @@ class KnowledgeNeed(BaseModel):
     concept: str = Field(
         description="需要查询的概念或关键词，如 '魔法消耗寿命'、'char_001 当前情绪'"
     )
-    source: KnowledgeSource = Field(
-        description="知识来源类型，决定查询哪个数据源"
-    )
+    source: KnowledgeSource = Field(description="知识来源类型，决定查询哪个数据源")
     context: str = Field(
         default="",
         description="为什么需要这个知识，用于提高检索精确度",

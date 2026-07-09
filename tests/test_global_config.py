@@ -1,6 +1,7 @@
 """GlobalConfig 全局配置测试。"""
 
 from pathlib import Path
+from unittest.mock import patch
 
 from opennovel.core.global_config import DEFAULT_MODEL, GlobalConfig
 
@@ -90,9 +91,17 @@ class TestGlobalConfigSearch:
         assert found.resolve() == config_path.resolve()
 
     def test_search_upwards_not_found(self, tmp_path: Path) -> None:
-        """测试搜索不到配置文件。"""
-        found = GlobalConfig._search_upwards(tmp_path)
-        assert found is None
+        """测试搜索不到配置文件（mock 防止用户级全局配置干扰）。"""
+        original_is_file = Path.is_file
+
+        def _mocked_is_file(self_inst: Path) -> bool:
+            if self_inst.name == ".opennovel.yaml":
+                return False
+            return original_is_file(self_inst)
+
+        with patch.object(Path, "is_file", _mocked_is_file):
+            found = GlobalConfig._search_upwards(tmp_path)
+            assert found is None
 
 
 class TestLoomConfigIntegration:

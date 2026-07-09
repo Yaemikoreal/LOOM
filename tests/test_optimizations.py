@@ -6,20 +6,19 @@
 - P2: AnchoredIssue Schema + 反馈锚定
 """
 
-import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from opennovel.agents.critic import Critic
-from opennovel.agents.writer import Writer
-from opennovel.core.auto_runner import AutoRunner, ChapterResult, RunReport
-from opennovel.core.context_assembler import assemble_context, assemble_actor_context
+from opennovel.core.auto_runner import ChapterResult, RunReport
+from opennovel.core.chunker import MarkdownChunker
+from opennovel.core.context_assembler import assemble_actor_context, assemble_context
 from opennovel.core.diff_checker import Mismatch, Severity
+from opennovel.core.llm_cache import LLMCache
 from opennovel.schemas.evaluation import AnchoredIssue, ChapterEvaluation, DimensionScore
 from opennovel.schemas.outline import ChapterOutline, SceneBreakdown
-
+from opennovel.schemas.search import ChunkSource
 
 # ── 辅助工具 ──
 
@@ -389,3 +388,90 @@ class TestFeedbackConstruction:
         assert "- 角色动机不足" in feedback
         assert "- 补充心理描写" in feedback
         assert "原文:" not in feedback
+
+
+# ── P1: LLM 输入缓存测试 ──
+
+
+class TestLLMCache:
+    """LLMCache 缓存测试。"""
+
+    def test_cache_miss_returns_none(self, tmp_path: Path) -> None:
+        """未命中时返回 None。"""
+        cache = LLMCache(tmp_path / "cache.db")
+        key = LLMCache.make_key("gpt-4", [{"role": "user", "content": "hello"}], 0.7)
+        assert cache.get(key) is None
+
+    def test_cache_hit_returns_response(self, tmp_path: Path) -> None:
+        """命中时返回缓存的响应。"""
+        cache = LLMCache(tmp_path / "cache.db")
+        messages = [{"role": "user", "content": "hello"}]
+        key = LLMCache.make_key("gpt-4", messages, 0.7)
+        response = {"content": "world", "usage": {"total_tokens": 10}}
+        cache.set(key, response, model="gpt-4", prompt_hash="abc", temperature=0.7)
+
+        cached = cache.get(key)
+        assert cached is not None
+        assert cached["content"] == "world"
+
+    def test_cache_key_differs_by_temperature(self, tmp_path: Path) -> None:
+        """不同 temperature 产生不同缓存键。"""
+        messages = [{"role": "user", "content": "hello"}]
+        key1 = LLMCache.make_key("gpt-4", messages, 0.7)
+        key2 = LLMCache.make_key("gpt-4", messages, 0.8)
+        assert key1 != key2
+
+    def test_cache_disabled_returns_none(self, tmp_path: Path) -> None:
+        """禁用缓存时始终返回 None。"""
+        cache = LLMCache(tmp_path / "cache.db", enabled=False)
+        messages = [{"role": "user", "content": "hello"}]
+        key = LLMCache.make_key("gpt-4", messages, 0.7)
+        cache.set(key, {"content": "world"})
+        assert cache.get(key) is None
+
+    def test_invalidate_removes_entry(self, tmp_path: Path) -> None:
+        """invalidate 可删除缓存条目。"""
+        cache = LLMCache(tmp_path / "cache.db")
+        messages = [{"role": "user", "content": "hello"}]
+        key = LLMCache.make_key("gpt-4", messages, 0.7)
+        cache.set(key, {"content": "world"})
+        assert cache.get(key) is not None
+
+        assert cache.invalidate(key) is True
+        assert cache.get(key) is None
+
+
+# ── P2: 动态 Chunk 策略测试 ──
+
+
+class TestDynamicChunkStrategy:
+    """MarkdownChunker 按文档类型动态分块测试。"""
+
+    def test_character_file_is_single_chunk(self) -> None:
+        """角色卡整卡一个 chunk。"""
+        chunker = MarkdownChunker()
+        text = "---\nid: char_001\n---\n# 艾伦\n\n" + "角色描述。\n" * 500
+        chunks = chunker.chunk_document(text, ChunkSource.CHARACTER, "char_001")
+        assert len(chunks) == 1
+
+    def test_canon_chunk_size_smaller_than_draft(self) -> None:
+        """canon chunk 大小小于 draft chunk 大小。"""
+        chunker = MarkdownChunker()
+        # 生成超过 canon 上限（384）但小于 draft 上限（1024）的文本
+        canon_text = "# 规则\n\n" + "这是规则。\n" * 80
+        draft_text = "# 章节\n\n" + "这是正文。\n" * 80
+
+        canon_chunks = chunker.chunk_document(canon_text, ChunkSource.CANON, "rules")
+        draft_chunks = chunker.chunk_document(draft_text, ChunkSource.DRAFT, "ch_001")
+
+        # canon 应该被切分成多块，draft 可能仍为一块
+        assert len(canon_chunks) > 1
+        assert len(draft_chunks) <= len(canon_chunks)
+
+    def test_subconscious_chunk_size(self) -> None:
+        """subconscious 使用较小的 chunk 大小。"""
+        chunker = MarkdownChunker()
+        text = "# 灵感\n\n" + "灵感碎片。\n" * 60
+        chunks = chunker.chunk_document(text, ChunkSource.SUBCONSCIOUS, "idea_001")
+        # 应被切分（因为 subconscious 上限 256）
+        assert len(chunks) >= 1

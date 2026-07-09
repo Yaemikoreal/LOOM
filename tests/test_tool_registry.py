@@ -1,7 +1,7 @@
 """ToolRegistry 工具注册中心测试。"""
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -45,7 +45,13 @@ def mock_storage() -> MagicMock:
         id: str = "char_001"
         name: str = "艾伦"
         physical: dict = {"injuries": ["左臂骨折"], "buffs": [], "debuffs": []}
-        emotional: dict = {"grief": 0.0, "anger": 0.3, "fear": 0.0, "joy": 0.0, "determination": 0.8}
+        emotional: dict = {
+            "grief": 0.0,
+            "anger": 0.3,
+            "fear": 0.0,
+            "joy": 0.0,
+            "determination": 0.8,
+        }
         location: str = "迷雾森林"
 
     class FakeCharacterFile:
@@ -109,7 +115,11 @@ class TestToolRegistry:
     """ToolRegistry 功能测试。"""
 
     def test_init_with_all_deps(
-        self, project_root: Path, mock_retriever: MagicMock, mock_event_store: MagicMock, mock_storage: MagicMock
+        self,
+        project_root: Path,
+        mock_retriever: MagicMock,
+        mock_event_store: MagicMock,
+        mock_storage: MagicMock,
     ) -> None:
         """测试完整初始化。"""
         registry = ToolRegistry(
@@ -128,9 +138,7 @@ class TestToolRegistry:
         assert registry.is_source_available(KnowledgeSource.CANON)
         # 没有 retriever 时查询返回空结果
 
-    def test_fulfill_canon(
-        self, project_root: Path, mock_retriever: MagicMock
-    ) -> None:
+    def test_fulfill_canon(self, project_root: Path, mock_retriever: MagicMock) -> None:
         """测试查询 canon 知识。"""
         registry = ToolRegistry(project_root=project_root, retriever=mock_retriever)
         needs = [KnowledgeNeed(concept="魔法消耗寿命", source=KnowledgeSource.CANON)]
@@ -140,9 +148,7 @@ class TestToolRegistry:
         assert results[0].source == KnowledgeSource.CANON
         assert "魔法消耗寿命" in results[0].content
 
-    def test_fulfill_character(
-        self, project_root: Path, mock_storage: MagicMock
-    ) -> None:
+    def test_fulfill_character(self, project_root: Path, mock_storage: MagicMock) -> None:
         """测试查询角色状态。"""
         # 创建角色文件
         (project_root / "characters" / "char_001.md").write_text(
@@ -150,11 +156,13 @@ class TestToolRegistry:
         )
 
         registry = ToolRegistry(project_root=project_root, storage=mock_storage)
-        needs = [KnowledgeNeed(
-            concept="char_001",
-            source=KnowledgeSource.CHARACTER,
-            character_id="char_001",
-        )]
+        needs = [
+            KnowledgeNeed(
+                concept="char_001",
+                source=KnowledgeSource.CHARACTER,
+                character_id="char_001",
+            )
+        ]
 
         results = registry.fulfill(needs)
         assert len(results) == 1
@@ -162,9 +170,7 @@ class TestToolRegistry:
         assert "艾伦" in results[0].content
         assert "左臂骨折" in results[0].content
 
-    def test_fulfill_empty_needs(
-        self, project_root: Path
-    ) -> None:
+    def test_fulfill_empty_needs(self, project_root: Path) -> None:
         """测试空需求列表返回空结果。"""
         registry = ToolRegistry(project_root=project_root)
         results = registry.fulfill([])
@@ -187,7 +193,11 @@ class TestToolRegistry:
 
         needs = [
             KnowledgeNeed(concept="魔法设定", source=KnowledgeSource.CANON),
-            KnowledgeNeed(concept="char_001", source=KnowledgeSource.CHARACTER, character_id="char_001"),
+            KnowledgeNeed(
+                concept="char_001",
+                source=KnowledgeSource.CHARACTER,
+                character_id="char_001",
+            ),
         ]
 
         results = registry.fulfill(needs)
@@ -196,9 +206,7 @@ class TestToolRegistry:
         assert KnowledgeSource.CANON in sources
         assert KnowledgeSource.CHARACTER in sources
 
-    def test_fulfill_without_retriever_returns_empty(
-        self, project_root: Path
-    ) -> None:
+    def test_fulfill_without_retriever_returns_empty(self, project_root: Path) -> None:
         """测试没有 Retriever 时返回空结果。"""
         registry = ToolRegistry(project_root=project_root)
         needs = [KnowledgeNeed(concept="魔法", source=KnowledgeSource.CANON)]
@@ -218,3 +226,102 @@ class TestToolRegistry:
         registry = ToolRegistry(project_root=project_root)
         assert registry.is_source_available(KnowledgeSource.CANON) is True
         assert registry.is_source_available(KnowledgeSource.SUBCONSCIOUS) is True
+
+
+class TestToolRegistryPermission:
+    """ToolRegistry 权限治理测试。"""
+
+    def test_writer_query_event_blocked_by_default(self, project_root: Path) -> None:
+        """Writer 默认调用 query_event 应被权限表拒绝。"""
+        from opennovel.core.safety_fence import SafetyFence, SafetyFenceConfig
+
+        config = SafetyFenceConfig(
+            tool_permissions={
+                "writer": {
+                    "allowed": ["query_canon", "query_character", "query_subconscious"],
+                    "disallowed": ["query_event"],
+                },
+            }
+        )
+        fence = SafetyFence(config)
+        registry = ToolRegistry(project_root=project_root)
+
+        need = KnowledgeNeed(concept="char_001", source=KnowledgeSource.EVENT)
+        result = registry.execute(need, safety_fence=fence, agent="writer")
+
+        assert result.relevance == 0.0
+        assert "权限拒绝" in result.content
+
+    def test_critic_read_allowed_but_write_tool_not_in_whitelist(self, project_root: Path) -> None:
+        """Critic 只能读取，调用非白名单工具应被拒绝。"""
+        from opennovel.core.safety_fence import SafetyFence, SafetyFenceConfig
+
+        config = SafetyFenceConfig(
+            tool_permissions={
+                "critic": {
+                    "allowed": ["query_canon", "query_event"],
+                    "disallowed": [],
+                },
+            }
+        )
+        fence = SafetyFence(config)
+        registry = ToolRegistry(project_root=project_root)
+
+        # query_character 不在 critic 白名单中，应被拒绝
+        need = KnowledgeNeed(concept="char_001", source=KnowledgeSource.CHARACTER)
+        result = registry.execute(need, safety_fence=fence, agent="critic")
+        assert result.relevance == 0.0
+        assert result.content.startswith("[权限拒绝]")
+
+    def test_manager_write_event_allowed(self, project_root: Path) -> None:
+        """Manager 在权限允许下调用 event 查询不应被拒绝。"""
+        from opennovel.core.safety_fence import SafetyFence, SafetyFenceConfig
+
+        config = SafetyFenceConfig(
+            tool_permissions={
+                "manager": {
+                    "allowed": ["query_draft", "query_event", "write_event_store"],
+                    "disallowed": ["write_canon"],
+                },
+            }
+        )
+        fence = SafetyFence(config)
+        registry = ToolRegistry(project_root=project_root)
+
+        need = KnowledgeNeed(concept="char_001", source=KnowledgeSource.EVENT)
+        result = registry.execute(need, safety_fence=fence, agent="manager")
+        # 允许查询，结果可能为空（无 event_store），但不应被拒绝
+        assert not result.content.startswith("[权限拒绝]")
+
+
+class TestToolRegistryRetry:
+    """ToolRegistry 重试降级测试。"""
+
+    def test_execute_with_retry_returns_degraded_result(self, project_root: Path) -> None:
+        """handler 连续失败时返回降级结果（不抛异常）并标注检索失败。"""
+        registry = ToolRegistry(project_root=project_root)
+        need = KnowledgeNeed(concept="魔法", source=KnowledgeSource.CANON)
+
+        failing_handler = MagicMock(side_effect=RuntimeError("检索服务不可用"))
+        result = registry._execute_with_retry(need, failing_handler, max_retries=2)
+
+        assert result.relevance == 0.0
+        assert "检索失败" in result.content
+        assert failing_handler.call_count == 2
+
+    def test_execute_with_retry_success_on_second_attempt(self, project_root: Path) -> None:
+        """handler 第二次尝试成功时返回正常结果。"""
+        registry = ToolRegistry(project_root=project_root)
+        need = KnowledgeNeed(concept="魔法", source=KnowledgeSource.CANON)
+
+        success_result = KnowledgeResult(
+            content="魔法消耗寿命",
+            source=KnowledgeSource.CANON,
+            concept="魔法",
+            relevance=1.0,
+        )
+        handler = MagicMock(side_effect=[RuntimeError("第一次失败"), success_result])
+        result = registry._execute_with_retry(need, handler, max_retries=3)
+
+        assert result == success_result
+        assert handler.call_count == 2

@@ -62,17 +62,13 @@ local-embedding = [
 phase2 = [
     "networkx>=3.1",
 ]
-gui = [
-    "PySide6>=6.6.0",
-]
 
 [project.scripts]
 novel = "opennovel.cli.main:app"
 novel-mcp = "opennovel.mcp_server:cli_main"
-novel-desktop = "opennovel_desktop.main:main"
 
 [tool.setuptools.packages.find]
-include = ["opennovel*", "opennovel_desktop*"]
+include = ["opennovel*"]
 
 [tool.ruff]
 target-version = "py310"
@@ -81,6 +77,10 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
 ignore = ["B008"]  # Typer 框架需要函数调用作为默认参数
+
+[tool.ruff.lint.per-file-ignores]
+"opennovel/cli/*.py" = ["E402"]  # sys.stdout.reconfigure 必须在顶层 import 前执行
+"scripts/*.py" = ["E402"]  # 允许脚本在顶层 import 前调整 sys.path
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -221,12 +221,14 @@ class TestAutonomousCall:
         """
         config = SafetyFenceConfig(max_recursion_depth=1)
         fence = SafetyFence(config)
-        with pytest.raises(RuntimeError, match="递归深度超限"):
+        with (  # noqa: SIM117
+            pytest.raises(RuntimeError, match="递归深度超限"),
+            fence.autonomous_call("writer"),
+        ):
+            # 第一层：depth=1，1 ≤ 1 → OK
             with fence.autonomous_call("writer"):
-                # 第一层：depth=1，1 ≤ 1 → OK
-                with fence.autonomous_call("writer"):
-                    # 第二层：depth=2，2 > 1 → 违规
-                    pass
+                # 第二层：depth=2，2 > 1 → 违规
+                pass
         assert fence.recursion_depth == 0
 
 
@@ -448,3 +450,90 @@ class TestToolPermission:
         )
         fence = SafetyFence(config)
         assert fence.check_tool_permission("writer", "query_event") is True
+
+
+class TestDefaultToolPermissions:
+    """默认 Agent 工具权限矩阵测试（基于 roadmap.md）。"""
+
+    def test_writer_default_permissions(self) -> None:
+        """Writer 默认可读 canon/character/subconscious/event，禁止写入。"""
+        from opennovel.core.safety_fence import DEFAULT_TOOL_PERMISSIONS
+
+        perms = DEFAULT_TOOL_PERMISSIONS["writer"]
+        assert "query_canon" in perms["allowed"]
+        assert "query_character" in perms["allowed"]
+        assert "query_subconscious" in perms["allowed"]
+        assert "query_event" in perms["allowed"]
+        assert "write_event_store" in perms["disallowed"]
+        assert "write_canon" in perms["disallowed"]
+        assert "write_characters" in perms["disallowed"]
+        assert "delete_file" in perms["disallowed"]
+
+    def test_critic_default_readonly(self) -> None:
+        """Critic 默认只读，禁止任何写入。"""
+        from opennovel.core.safety_fence import DEFAULT_TOOL_PERMISSIONS
+
+        perms = DEFAULT_TOOL_PERMISSIONS["critic"]
+        assert "query_canon" in perms["allowed"]
+        assert "query_event" in perms["allowed"]
+        assert "write_draft" in perms["disallowed"]
+        assert "write_event_store" in perms["disallowed"]
+
+    def test_manager_default_permissions(self) -> None:
+        """Manager 默认可读 draft、可写 event_store/state_cache，禁止写 canon/characters/draft。"""
+        from opennovel.core.safety_fence import DEFAULT_TOOL_PERMISSIONS
+
+        perms = DEFAULT_TOOL_PERMISSIONS["manager"]
+        assert "query_draft" in perms["allowed"]
+        assert "write_event_store" in perms["allowed"]
+        assert "write_state_cache" in perms["allowed"]
+        assert "write_canon" in perms["disallowed"]
+        assert "write_characters" in perms["disallowed"]
+        assert "write_draft" in perms["disallowed"]
+
+    def test_director_default_readonly(self) -> None:
+        """Director 默认只读，禁止任何写入。"""
+        from opennovel.core.safety_fence import DEFAULT_TOOL_PERMISSIONS
+
+        perms = DEFAULT_TOOL_PERMISSIONS["director"]
+        assert "query_evaluation" in perms["allowed"]
+        assert "query_event" in perms["allowed"]
+        assert "query_state" in perms["allowed"]
+        assert "write_event_store" in perms["disallowed"]
+        assert "write_draft" in perms["disallowed"]
+
+    def test_config_loads_default_permissions(self, tmp_path: Path) -> None:
+        """LoomConfig 加载时自动注入默认权限矩阵。"""
+        from opennovel.core.config import LoomConfig
+
+        root = tmp_path / "project"
+        root.mkdir()
+        (root / "novel.yaml").write_text("model: test\n", encoding="utf-8")
+
+        config = LoomConfig.load(root)
+        assert "writer" in config.safety_fence.tool_permissions
+        assert "query_event" in config.safety_fence.tool_permissions["writer"]["allowed"]
+        assert "write_event_store" in config.safety_fence.tool_permissions["writer"]["disallowed"]
+
+    def test_user_tool_permissions_override_agent(self, tmp_path: Path) -> None:
+        """用户可覆盖指定 agent 的默认权限。"""
+        from opennovel.core.config import LoomConfig
+
+        root = tmp_path / "project"
+        root.mkdir()
+        (root / "novel.yaml").write_text(
+            "model: test\n"
+            "safety_fence:\n"
+            "  tool_permissions:\n"
+            "    writer:\n"
+            "      allowed: [query_canon]\n"
+            "      disallowed: [query_event]\n",
+            encoding="utf-8",
+        )
+
+        config = LoomConfig.load(root)
+        writer_perms = config.safety_fence.tool_permissions["writer"]
+        assert writer_perms["allowed"] == ["query_canon"]
+        assert writer_perms["disallowed"] == ["query_event"]
+        # 其他 agent 仍使用默认权限
+        assert "query_event" in config.safety_fence.tool_permissions["critic"]["allowed"]
