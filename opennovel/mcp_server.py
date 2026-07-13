@@ -14,10 +14,11 @@
 import asyncio
 import json
 import logging
-import sys
 from pathlib import Path
 
 from mcp import types
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
 
 from opennovel.agents.critic import Critic
 from opennovel.agents.writer import Writer
@@ -26,8 +27,6 @@ from opennovel.core.config import LoomConfig
 from opennovel.core.llm import LLMBus
 from opennovel.core.retriever import Retriever
 from opennovel.storage.yaml_storage import YAMLStorage
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
 
 logger = logging.getLogger(__name__)
 
@@ -401,11 +400,11 @@ async def _handle_get_status(args: dict) -> str:
     if outline_path.exists():
         content = outline_path.read_text(encoding="utf-8")
         chapter_count = sum(1 for line in content.split("\n") if line.startswith("## "))
-        sections.append(f"\n## 大纲")
+        sections.append("\n## 大纲")
         sections.append(f"- 文件: {config.outline}")
         sections.append(f"- 章节数: {chapter_count}")
     else:
-        sections.append(f"\n## 大纲")
+        sections.append("\n## 大纲")
         sections.append(f"- 未创建 ({config.outline})")
 
     return "\n".join(sections)
@@ -608,8 +607,9 @@ async def _handle_stash(args: dict) -> str:
         return "错误: 必须提供 content"
 
     try:
-        from opennovel.storage.yaml_storage import YAMLStorage
         from datetime import datetime
+
+        from opennovel.storage.yaml_storage import YAMLStorage
 
         storage = YAMLStorage()
         sub_dir = path / "subconscious"
@@ -721,7 +721,11 @@ async def _handle_foreshadow(args: dict) -> str:
             description = args.get("description", "")
             if not description:
                 return json.dumps({"status": "error", "message": "add 操作需要 description 参数"}, ensure_ascii=False)
-            from opennovel.schemas.foreshadowing import ForeshadowItem, ForeshadowStatus, ForeshadowType
+            from opennovel.schemas.foreshadowing import (
+                ForeshadowItem,
+                ForeshadowStatus,
+                ForeshadowType,
+            )
             max_num = 0
             for item in state.items:
                 try:

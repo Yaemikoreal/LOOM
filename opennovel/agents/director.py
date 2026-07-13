@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 
 from opennovel.core.context_assembler import (
-    ContextStrategy,
     assemble_context,
     detect_strategy,
     get_model_window,

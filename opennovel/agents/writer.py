@@ -19,7 +19,6 @@ from opennovel.core.agent_autonomy import (
     ToolCallParser,
 )
 from opennovel.core.context_assembler import (
-    ContextStrategy,
     assemble_context,
     detect_strategy,
     get_model_window,

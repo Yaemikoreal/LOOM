@@ -60,7 +60,28 @@ The system is organized around three decoupled layers:
 - **Model-Agnostic LLM Bus** — LiteLLM integration supports any provider (OpenAI, Anthropic, DeepSeek, Ollama, local models). Each agent can be independently configured.
 - **Three-Layer Model Fallback** — Agent-level model in novel.yaml, project-level model, global default in `.opennovel.yaml`, hardcoded default. No repeated configuration needed.
 - **Human-in-the-Loop** — AI proposes, human approves. Every state change goes through `novel commit` with diff review. Full rollback support.
-- **MCP Server** — Four tools exposed via Model Context Protocol for Claude Code and other MCP clients.
+- **MCP Server** — Eight tools exposed via Model Context Protocol for Claude Code and other MCP clients: init_project, get_status, write_chapter, auto_create, commit, stash, diff, doctor, foreshadow, reindex.
+
+### v2.1 — Search & Reliability
+
+- **Hybrid Search Pipeline** — Three-channel retrieval (Vector semantic + FTS5 keyword + EventStore SQL) with Reciprocal Rank Fusion and Cross-Encoder reranking (bge-reranker-v2-m3).
+- **Markdown Chunker** — Recursive heading-level chunking (512 tokens/chunk) with deterministic chunk IDs for cross-store correlation.
+- **FTS5 Full-Text Index** — SQLite FTS5 with unicode61 tokenizer for exact Chinese character matching. Independent `.novel.fts5.db` database.
+- **Elastic Resource Scheduling** — Per-chapter resource allocation (CLIMAX ×2.0, ROUTINE ×1.0, TRANSITION ×0.6) with dynamic tension-based upgrades.
+- **Lazy Batch Processing** — FTS5 updates, metrics writes, and vector indexing deferred to chapter-end for reduced critical-path latency.
+- **Resource-Aware Degradation** — Auto-detection of system resources (CPU/memory/GPU/battery) with graceful degradation of search and context strategies.
+- **Attention Budget Management** — Priority-scored context fragments ordered for LLM attention optimization (critical content at head and tail).
+- **Just-in-Time Retrieval** — On-demand knowledge queries via ToolRegistry instead of preloading all reference material into context.
+- **Context Validation** — Pre-injection consistency checks (CANON conflicts, dirty flags, state contradictions) with warning annotations.
+- **Query Transformation** — Multi-Query expansion, HyDE (hypothetical document embeddings), and query decomposition for bridging semantic gaps.
+- **Semantic Cache** — Embedding-based retrieval cache (≥0.92 cosine similarity hit) with LRU eviction, reducing repeated pipeline latency from ~200ms to <1ms.
+- **Multi-Model Orchestration** — Proposal-synthesis pattern for Writer/Critic: parallel generation from creative + logical + detail models, fused by a synthesizer.
+- **Credit Assignment** — Historical agent performance analysis with trend detection and model-switching recommendations.
+- **Online Guardian Daemon** — Post-chapter health checks with auto-fix for mild inconsistencies, CANON compliance scanning, and dirty flag monitoring.
+- **Fault Analyzer** — Automatic failure diagnosis (timeout / token budget / CANON conflict / agent error) with ranked recovery suggestions.
+- **Cross-Source Validator** — Multi-source consistency checks across YAML Frontmatter, SQLite EventStore, and body Markdown.
+- **Staged Evaluation** — Three-phase metrics (retrieval Recall@K/MRR, generation faithfulness/hallucination rate, global narrative coherence).
+- **Checkpoint Recovery** — Mid-pipeline checkpoints (think/write/evaluate) enabling resume from nearest safe state on failure.
 
 ---
 

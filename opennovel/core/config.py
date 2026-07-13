@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError as PydanticValidationError
+from pydantic import BaseModel, Field
+from pydantic import ValidationError as PydanticValidationError
 
 from opennovel.core.global_config import DEFAULT_MODEL, GlobalConfig
 from opennovel.core.safety_fence import SafetyFenceConfig as _SafetyFenceConfig

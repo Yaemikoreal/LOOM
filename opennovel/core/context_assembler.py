@@ -18,7 +18,9 @@ from pathlib import Path
 
 import tiktoken
 
+from opennovel.core.context_validator import ContextValidator
 from opennovel.core.parser import split_chapter_into_scenes
+from opennovel.core.resource_aware import ResourceAwareDegrader
 from opennovel.core.state_projector import StateProjector
 from opennovel.schemas.character import AuthorityLevel
 from opennovel.storage.sqlite import EventStore
@@ -337,42 +339,53 @@ def assemble_context(
     Returns:
         组装完成的消息列表，可直接传入 LLM API
     """
+    # ADR 0011: 资源感知降级 — 系统资源极低时强制使用 FRUGAL 策略
+    degrader = ResourceAwareDegrader()
+    if degrader.should_use_frugal_strategy() and strategy != ContextStrategy.FRUGAL:
+        logger.info("资源档位 MINIMAL，强制使用 FRUGAL 策略（原策略: %s）", strategy.value)
+        strategy = ContextStrategy.FRUGAL
+
     if strategy == ContextStrategy.PANORAMIC:
-        return _assemble_panoramic(
-            chapter_path,
-            project_root,
-            task_message,
-            prompt_path,
-            canon_content,
-            subconscious_content,
-            causal_chain_context,
-            active_characters,
-            yaml_storage,
+        messages = _assemble_panoramic(
+            chapter_path, project_root, task_message, prompt_path,
+            canon_content, subconscious_content, causal_chain_context,
+            active_characters, yaml_storage,
         )
     elif strategy == ContextStrategy.STANDARD:
-        return _assemble_standard(
-            chapter_path,
-            project_root,
-            task_message,
-            prompt_path,
-            canon_content,
-            subconscious_content,
-            causal_chain_context,
-            active_characters,
-            yaml_storage,
+        messages = _assemble_standard(
+            chapter_path, project_root, task_message, prompt_path,
+            canon_content, subconscious_content, causal_chain_context,
+            active_characters, yaml_storage,
         )
     else:
-        return _assemble_frugal(
-            chapter_path,
-            project_root,
-            task_message,
-            prompt_path,
-            canon_content,
-            subconscious_content,
-            causal_chain_context,
-            active_characters,
-            yaml_storage,
+        messages = _assemble_frugal(
+            chapter_path, project_root, task_message, prompt_path,
+            canon_content, subconscious_content, causal_chain_context,
+            active_characters, yaml_storage,
         )
+
+    # ADR 0008: 注入前上下文一致性校验
+    try:
+        validator = ContextValidator(project_root)
+        chapter_text = ""
+        for msg in messages:
+            if msg.get("role") == "user":
+                chapter_text = msg.get("content", "")
+        report = validator.validate(
+            chapter_text=chapter_text,
+            check_canon=True,
+            check_dirty_flags=True,
+        )
+        if report.warning_messages:
+            warning_text = "\n".join(report.warning_messages[:3])
+            messages.append({
+                "role": "system",
+                "content": f"[CONTEXT VALIDATION]\n{warning_text}",
+            })
+    except Exception as e:
+        logger.debug("上下文校验跳过: %s", e)
+
+    return messages
 
 
 # ── FRUGAL 策略 ──

@@ -1,0 +1,92 @@
+[
+  {
+    "file": "opennovel/core/search_pipeline.py",
+    "line": 88,
+    "summary": "RRF 融合：多通道命中的文本累加了 rrf_score 元组但未写回 result.score，下游 reranker 和 JITRetriever 读取到的是单个通道的陈旧分数",
+    "failure_scenario": "查询同时在 vector 和 fts5 通道中被召回 → rrf_fusion() 正确累加 RRF 分数得到 0.0646，但 result.score 停留在第一个通道的 0.0323 → reranker.should_skip_rerank() 用低分判断而错误跳过重排"
+  },
+  {
+    "file": "opennovel/core/credit_assignment.py",
+    "line": 255,
+    "summary": "Agent 评分查询缺少 WHERE 条件：_get_agent_scores 的 agent 参数未被用于过滤，所有 Agent 获得完全相同的评分列表",
+    "failure_scenario": "Writer 均分 40，Critic 均分 90 → CreditAssigner 为两者报告相同的 avg_score（混合了全部 Agent 的评分）→ 无法识别真正的性能瓶颈 Agent"
+  },
+  {
+    "file": "opennovel/core/hybrid_retriever.py",
+    "line": 128,
+    "summary": "HybridRetriever 创建 SearchPipeline 时硬编码 vector_store=None，三通道 RRF 融合退化为双通道（仅 FTS5+EventStore），向量语义结果完全绕过融合",
+    "failure_scenario": "向量语义单独作为回退检索执行（line 226），但永远不参与 RRF 融合 → 语义相似的关键 CANON 设定在融合排名中完全缺失"
+  },
+  {
+    "file": "opennovel/core/hybrid_retriever.py",
+    "line": 219,
+    "summary": "SearchPipeline 路径提前 return 导致 subconscious 回退被跳过：只要 pipeline 返回任何结果（即使仅有 canon），subconscious_content 就不再填充",
+    "failure_scenario": "Writer 查询 → SearchPipeline 找到 3 条 CANON 结果 → 提前 return → 即使没有 subconscious 结果被 RRF 融合覆盖，灵感碎片的向量回退也被跳过 → 灵感池永久不可达"
+  },
+  {
+    "file": "opennovel/core/lazy_batch.py",
+    "line": 248,
+    "summary": "LazyBatchProcessor.flush 在缺少对应 store 参数时静默丢弃该类型的所有已排队操作——第 248 行在分组遍历后无条件 clear 整个队列",
+    "failure_scenario": "调用 flush(fts5_store=f) 但忘了传 metrics_store → metrics 操作留在队列中 → 末尾 self._queue.clear() 将它们全部丢弃，无任何错误或警告"
+  },
+  {
+    "file": "opennovel/core/lazy_batch.py",
+    "line": 87,
+    "summary": "队列溢出警告声称触发强制刷写但从未实际调用 flush()，队列无界增长",
+    "failure_scenario": "长章节快速 enqueue 超过 500 个操作 → 日志显示触发强制刷写 → 实际队列持续增长到数千条 → OOM 风险"
+  },
+  {
+    "file": "opennovel/core/semantic_cache.py",
+    "line": 161,
+    "summary": "LRU 驱逐假设每条目都有对应嵌入条目（max_size×2），但无 sentence-transformers 时仅存储响应→实际容量翻倍至 1000 条",
+    "failure_scenario": "sentence-transformers 未安装 → 嵌入生成返回 None → 驱逐阈值变为 1000 而非 500 → 内存使用翻倍，stats 属性误报 size=500"
+  },
+  {
+    "file": "opennovel/storage/fts5.py",
+    "line": 161,
+    "summary": "delete_by_source 返回错误的 rowcount——在 cursor.execute(DELETE) 之后又执行了 INSERT rebuild，cursor.rowcount 变为 INSERT 的 1 而非 DELETE 的实际行数",
+    "failure_scenario": "删除 5 条 CANON chunk → INSERT rebuild 后 cursor.rowcount=1 → 调用方收到 deleted=1 → 日志误导、统计错误"
+  },
+  {
+    "file": "opennovel/core/guardian.py",
+    "line": 148,
+    "summary": "Guardian 用原始子串匹配（'injury' in text）而非 YAML 解析检测状态，正文中任何提及 injury 的地方都触发虚假 WARNING",
+    "failure_scenario": "角色文件 health: healthy 但正文提到 He recalled the injury from last year → 子串匹配误判 → 每章产生虚假 WARNING → 作者对真实告警脱敏"
+  },
+  {
+    "file": "opennovel/storage/fts5.py",
+    "line": 215,
+    "summary": "FTS5 搜索未转义用户查询中的特殊字符（+、-、*、( 等），嵌入的 FTS5 运算符会静默改变搜索语义或导致语法错误",
+    "failure_scenario": "用户搜索影渊-森林（带连字符的专有名词）→ FTS5 将 - 解析为 NOT 运算符 → 实际搜索变为影渊 NOT 森林 → 结果与预期完全相反"
+  },
+  {
+    "file": "opennovel/core/credit_assignment.py",
+    "line": 247,
+    "summary": "_get_agent_traces 和 _get_agent_scores 中 except Exception: return [] 静默吞掉所有异常（导入失败、DB 损坏等），无任何日志输出",
+    "failure_scenario": "sqlmodel 未安装 → ImportError 被 except Exception 吞掉 → 静默返回空列表 → 报告显示无数据但用户无从得知导入失败才是根因"
+  },
+  {
+    "file": "opennovel/core/credit_assignment.py",
+    "line": 195,
+    "summary": "建议文本使用了错误的变量——打印 abs(perf.avg_score)（全局终身均分）而非实际计算出的下降幅度 diff（已算出但从未使用）",
+    "failure_scenario": "Writer 终身均分 72、实际下滑 18 分 → 建议显示近5次均分 vs 之前 -72.0 而非 -18.0 → 严重误导优化方向"
+  },
+  {
+    "file": "opennovel/core/reranker.py",
+    "line": 36,
+    "summary": "模块常量 _EARLY_EXIT_RATIO=2.0 从未被引用，方法体硬编码了 3.0——修改常量完全不改变行为",
+    "failure_scenario": "维护者调整 _EARLY_EXIT_RATIO=2.5 期望调优重排触发频率 → 硬编码 3.0 不变 → 行为完全不变 → 调试困惑"
+  },
+  {
+    "file": "opennovel/core/staged_evaluation.py",
+    "line": 170,
+    "summary": "staged_evaluation 将不同章节和 Agent 的评分展平成单一列表后顺序比较相邻条目，把跨章节评分差异误判为重试收敛",
+    "failure_scenario": "第 5 章评分 40（首轮）、第 6 章评分 95（不同章）→ 95 > 40 × 0.95 → 误判为重试收敛 → retry_convergence_rate 虚高，掩盖真实问题"
+  },
+  {
+    "file": "opennovel/core/credit_assignment.py",
+    "line": 74,
+    "summary": "CreditAssigner.__init__ 的 metrics_store 参数缺少类型注解，违反项目所有函数签名必须包含类型提示规则",
+    "failure_scenario": "mypy --strict 对该参数报 disallow_untyped_defs 错误 → CI 类型检查失败"
+  }
+]

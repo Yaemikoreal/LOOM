@@ -79,3 +79,34 @@ class AgentTrace(SQLModel, table=True):
     duration_ms: int = SQLField(default=0, description="执行耗时（毫秒）")
     status: str = SQLField(default="success", description="执行状态: success/error")
     detail: str = SQLField(default="", description="补充信息（如错误消息）")
+
+
+class AgentEvent(SQLModel, table=True):
+    """Agent 不可变事件流 — ADR 0010 事件溯源。
+
+    记录所有 Agent 操作和流水线事件的 append-only 日志。
+    通过 trace_id 串联完整决策链路。
+    """
+
+    __tablename__ = "agent_events"
+
+    id: int | None = SQLField(default=None, primary_key=True)
+    timestamp: str = SQLField(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="事件发生时间",
+    )
+    trace_id: str = SQLField(index=True, description="追踪标识，串联同一决策链路的多个事件")
+    event_type: str = SQLField(
+        description="事件类型: agent.call.start / agent.call.end / "
+                    "agent.call.error / pipeline.retry / pipeline.skip / "
+                    "snapshot.create"
+    )
+    agent: str = SQLField(default="", description="Agent 名称")
+    action: str = SQLField(default="", description="执行动作")
+    chapter_id: str = SQLField(default="", description="关联章节 ID")
+    input_hash: str = SQLField(default="", description="输入数据的 SHA256 哈希")
+    output_hash: str = SQLField(default="", description="输出数据的 SHA256 哈希")
+    duration_ms: int = SQLField(default=0)
+    token_count: int = SQLField(default=0)
+    status: str = SQLField(default="success")
+    detail: str = SQLField(default="", description="补充信息（错误消息/跳过的原因等）")

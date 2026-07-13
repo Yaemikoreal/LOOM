@@ -177,6 +177,6 @@ def commit(
     # 更新时间线
     try:
         write_timeline(project_root)
-        rprint(f"  [green]✓[/green] 时间线已更新")
+        rprint("  [green]✓[/green] 时间线已更新")
     except Exception as e:
         rprint(f"  [yellow]时间线写入失败: {e}[/yellow]")

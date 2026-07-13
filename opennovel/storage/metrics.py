@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from opennovel.schemas.metrics import AgentTrace, EvaluationHistory, TokenUsage
+from opennovel.schemas.metrics import AgentEvent, AgentTrace, EvaluationHistory, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -308,3 +308,73 @@ class MetricsStore:
         finally:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             self.record_trace(agent, action, chapter_id, elapsed_ms, status, detail)
+
+    # ── Agent 事件溯源 (ADR 0010) ─────────────────────────────────────────
+
+    def record_event(
+        self,
+        trace_id: str,
+        event_type: str,
+        agent: str = "",
+        action: str = "",
+        chapter_id: str = "",
+        input_hash: str = "",
+        output_hash: str = "",
+        duration_ms: int = 0,
+        token_count: int = 0,
+        status: str = "success",
+        detail: str = "",
+    ) -> AgentEvent:
+        """记录一条不可变的 Agent 事件（append-only 事件溯源）。
+
+        Args:
+            trace_id: 追踪标识
+            event_type: 事件类型
+            agent: Agent 名称
+            action: 执行动作
+            chapter_id: 章节 ID
+            input_hash: 输入哈希
+            output_hash: 输出哈希
+            duration_ms: 耗时
+            token_count: Token 数
+            status: 状态
+            detail: 补充信息
+
+        Returns:
+            写入的 AgentEvent 记录
+        """
+        record = AgentEvent(
+            trace_id=trace_id,
+            event_type=event_type,
+            agent=agent,
+            action=action,
+            chapter_id=chapter_id,
+            input_hash=input_hash,
+            output_hash=output_hash,
+            duration_ms=duration_ms,
+            token_count=token_count,
+            status=status,
+            detail=detail,
+        )
+        with Session(self._engine) as session:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+        return record
+
+    def get_events_by_trace(self, trace_id: str) -> list[AgentEvent]:
+        """按 trace_id 查询完整事件链。
+
+        Args:
+            trace_id: 追踪标识
+
+        Returns:
+            事件列表（按时间戳排序）
+        """
+        with Session(self._engine) as session:
+            statement = (
+                select(AgentEvent)
+                .where(AgentEvent.trace_id == trace_id)
+                .order_by(AgentEvent.timestamp)
+            )
+            return list(session.exec(statement).all())

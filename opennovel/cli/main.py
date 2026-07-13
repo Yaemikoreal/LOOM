@@ -65,16 +65,15 @@ def init(
     - 在 workspace 目录下创建项目（传入 . 则在当前目录创建）
     - 直接使用默认配置
     """
+    # ── 确定参数：name / template / mode ──
+    import os
     from pathlib import Path
 
-    import yaml
     import click
+    import yaml
 
     from opennovel.core.global_config import GlobalConfig
     from opennovel.storage.yaml_storage import YAMLStorage
-
-    # ── 确定参数：name / template / mode ──
-    import os
 
     has_deepseek = bool(os.environ.get("DEEPSEEK_API_KEY"))
     has_openai = bool(os.environ.get("OPENAI_API_KEY"))
@@ -224,7 +223,7 @@ def init(
             yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
         rprint(f"  [green]✓[/green] 创建配置文件: novel.yaml (model: {effective_model})")
 
-    rprint(f"[bold green]✅ 项目初始化完成！[/bold green]")
+    rprint("[bold green]✅ 项目初始化完成！[/bold green]")
     rprint(f"  项目路径: {project_root}")
     rprint(f"  默认模型: {effective_model}")
     if not has_any_key and name is None:
@@ -523,7 +522,7 @@ def doctor(
 
     from rich.panel import Panel
 
-    from opennovel.core.doctor import DiagnosticLevel, Doctor
+    from opennovel.core.doctor import Doctor
 
     project_root = Path(path).resolve()
 
@@ -650,7 +649,6 @@ def foreshadow(
     store = ForeshadowStore(project_root)
 
     if add:
-        import json
 
         from opennovel.schemas.foreshadowing import ForeshadowItem, ForeshadowStatus, ForeshadowType
 
@@ -709,6 +707,110 @@ def foreshadow(
     console.print(table)
     rprint(f"\n[dim]伏笔文件: {store.file_path}[/dim]")
     rprint("[dim]新增伏笔: novel foreshadow --add \"描述...\"[/dim]")
+
+
+@app.command()
+def reindex(
+    path: str = typer.Argument(".", help="项目路径"),
+    force: bool = typer.Option(False, "--force", "-f", help="跳过确认提示，直接重建"),
+) -> None:
+    """全量重建搜索索引（FTS5 + 向量）。
+
+    重新扫描 canon/、characters/、subconscious/、draft/ 目录下的所有 Markdown 文件，
+    分块后写入 FTS5 全文索引和向量语义索引。
+
+    适用场景：
+    - 新增 5+ 章后（doctor 会自动提示）
+    - 距上次重建超 7 天后
+    - 搜索结果不准确时
+    """
+    from pathlib import Path
+
+    from rich.prompt import Confirm
+
+    from opennovel.core.search_pipeline import SearchPipeline
+    from opennovel.storage.fts5 import Fts5Store
+
+    project_root = Path(path).resolve()
+
+    if not force:
+        if not Confirm.ask(
+            f"即将重建 [cyan]{project_root.name}[/cyan] 的搜索索引，"
+            f"预计耗时 10-30 秒。继续？",
+            default=True,
+        ):
+            rprint("[dim]已取消[/dim]")
+            return
+
+    # 初始化组件
+    canon_dir = project_root / "canon"
+    characters_dir = project_root / "characters"
+    subconscious_dir = project_root / "subconscious"
+    draft_dir = project_root / "draft"
+
+    fts5_store = Fts5Store(project_root)
+
+    # 尝试加载 VectorStore（可能不存在或未安装 LlamaIndex）
+    vector_store = None
+    try:
+        from opennovel.storage.vector import VectorStore
+
+        vector_store = VectorStore(project_root)
+        # 确保索引目录存在
+        index_dir = project_root / ".index"
+        index_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        rprint(f"[yellow]⚠ VectorStore 不可用: {e}[/yellow]")
+        rprint("[dim]仅重建 FTS5 索引，跳过向量索引[/dim]")
+
+    # 尝试加载 EventStore
+    event_store = None
+    event_db = project_root / ".novel.db"
+    if event_db.exists():
+        try:
+            from opennovel.storage.sqlite import EventStore
+
+            event_store = EventStore(event_db)
+        except Exception as e:
+            rprint(f"[yellow]⚠ EventStore 不可用: {e}[/yellow]")
+
+    # 执行全量重建
+    pipeline = SearchPipeline(
+        project_root,
+        vector_store=vector_store,
+        fts5_store=fts5_store,
+        event_store=event_store,
+    )
+
+    rprint(f"[bold cyan]正在重建索引[/bold cyan] - {project_root.name}")
+
+    total = pipeline.rebuild_index(
+        canon_dir=canon_dir if canon_dir.exists() else None,
+        characters_dir=characters_dir if characters_dir.exists() else None,
+        subconscious_dir=subconscious_dir if subconscious_dir.exists() else None,
+        draft_dir=draft_dir if draft_dir.exists() else None,
+    )
+
+    # 记录章节数
+    if draft_dir.exists():
+        chapter_count = len(list(draft_dir.glob("*.md")))
+        fts5_store.record_chapter_count(chapter_count)
+
+    if total == 0:
+        rprint("[yellow]⚠ 未找到可索引的 Markdown 文件[/yellow]")
+        rprint("[dim]提示：在项目目录下创建 canon/、draft/ 等目录后重试[/dim]")
+        return
+
+    # 显示统计
+    counts = fts5_store.get_chunk_count_by_source()
+    rprint(f"\n[green]✓ 索引重建完成[/green] — {total} 个 chunk")
+    for source, count in sorted(counts.items()):
+        rprint(f"  {source}: {count} 个 chunk")
+
+    rprint(f"\n[dim]FTS5 数据库: {fts5_store.db_path}[/dim]")
+
+    if event_store is not None:
+        event_store.close()
 
 
 if __name__ == "__main__":

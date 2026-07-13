@@ -15,7 +15,6 @@ State Projector 从 EventLog 事件流归约为角色在任意时间点的可信
 """
 
 import logging
-from pathlib import Path
 
 from opennovel.schemas.state import CharacterStateSnapshot
 from opennovel.storage.sqlite import EventStore

@@ -19,10 +19,11 @@
 
 import logging
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -269,11 +270,7 @@ class SafetyFence:
 
         blocking_violations = 0
         for v in violations:
-            if v.severity == "violation":
-                blocking_violations += 1
-            elif v.severity == "warning":
-                blocking_violations += 1
-            elif v.severity == "suggestion" and strict:
+            if v.severity == "violation" or v.severity == "warning" or v.severity == "suggestion" and strict:
                 blocking_violations += 1
 
             self.violations.append(

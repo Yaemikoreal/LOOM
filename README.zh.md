@@ -60,7 +60,28 @@
 - **模型无关的 LLM 总线** — LiteLLM 集成支持任意提供商（OpenAI、Anthropic、DeepSeek、Ollama、本地模型）。每个 Agent 可独立配置。
 - **三层模型路由** — Agent 级 → 项目级 → 全局默认 → 硬编码默认。无需重复配置。
 - **人工审核门控** — AI 提议，人类确认。每次状态变更经 `novel commit` Diff 审阅后方可写入。完整快照回滚支持。
-- **MCP Server** — 通过 Model Context Protocol 暴露四个工具，供 Claude Code 等 MCP 客户端调用。
+- **MCP Server** — 通过 Model Context Protocol 暴露 8 个工具（init_project / get_status / write_chapter / auto_create / commit / stash / diff / doctor / foreshadow / reindex），供 Claude Code 等 MCP 客户端调用。
+
+### v2.1 — 搜索与可靠性
+
+- **混合搜索管道** — 三通道检索（向量语义 + FTS5 关键词 + EventStore 事件查询），RRF 融合 + Cross-Encoder 重排序（bge-reranker-v2-m3）。
+- **Markdown 递归分块** — 按标题层级递归切分（512 tokens/chunk），生成确定性 chunk_id 实现三存储关联。
+- **FTS5 全文索引** — SQLite FTS5 + unicode61 分词器，中文逐字精确匹配。独立 `.novel.fts5.db` 数据库。
+- **弹性资源调度** — 按章节类型差异化分配 Token/模型资源（高潮 ×2.0 / 日常 ×1.0 / 过渡 ×0.6），支持张力驱动的动态升级。
+- **延迟批处理** — FTS5 更新、Metrics 写入、向量索引更新延迟到章末批量执行，降低关键路径延迟。
+- **资源感知降级** — 自动检测系统资源（CPU/内存/GPU/电池），对检索和上下文策略进行优雅降级。
+- **注意力预算管理** — 基于重要性和时效性的上下文片段优先级排序，高优先级内容置于 LLM 注意力最强的头尾位置。
+- **JIT 按需检索** — 不预加载全部资料，Agent 遇到知识缺口时通过 ToolRegistry 即时查询，减少无关上下文注入。
+- **上下文一致性校验** — 注入前自动检测 CANON 冲突、脏标记和角色状态矛盾，以 WARNING 注解形式标记而非阻断。
+- **查询转换** — Multi-Query 多角度扩展、HyDE 假想答案检索、查询分解，弥合自然语言与文档表述之间的语义鸿沟。
+- **语义缓存** — 基于 BGE-M3 embedding 余弦相似度（≥0.92 命中）的检索结果缓存，LRU 淘汰，命中时延迟 <1ms。
+- **多模型编排** — Writer/Critic 内部"提议-综合"机制：创意+逻辑+细节三模型并行提案，综合模型融合输出。
+- **信用分配** — 基于历史运行数据的 Agent 表现趋势分析 + 模型切换建议。
+- **在线守护进程** — 每章完成后自动健康检查，轻度不一致自动修复，CANON 冲突报警，脏标记监控。
+- **故障分析器** — 自动诊断失败原因（超时 / Token 超预算 / CANON 冲突 / Agent 异常），输出概率排序的恢复建议。
+- **跨源数据校验** — YAML Frontmatter ↔ SQLite EventStore ↔ 正文 Markdown 三源一致性比对。
+- **分阶段评估** — 检索（Recall@K/MRR）→ 生成（忠实度/幻觉率）→ 全局（叙事连贯性）三阶段指标体系。
+- **检查点恢复** — think/write/evaluate 三阶段检查点，失败后从最近安全状态继续，无需完全重来。
 
 ---
 

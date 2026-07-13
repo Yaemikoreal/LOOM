@@ -11,8 +11,9 @@
 """
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from opennovel.schemas.knowledge import KnowledgeNeed, KnowledgeResult, KnowledgeSource
 

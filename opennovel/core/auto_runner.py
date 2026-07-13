@@ -18,8 +18,12 @@ from opennovel.agents.writer import Writer
 from opennovel.core.chapter_utils import ChapterType, detect_chapter_type
 from opennovel.core.config import LoomConfig
 from opennovel.core.diff_checker import DiffChecker, Mismatch
+from opennovel.core.fault_analyzer import FaultAnalyzer
+from opennovel.core.guardian import GuardianDaemon
 from opennovel.core.hybrid_retriever import HybridRetriever
+from opennovel.core.lazy_batch import LazyBatchProcessor
 from opennovel.core.llm import LLMBus
+from opennovel.core.priority_scheduler import PriorityScheduler
 from opennovel.core.retriever import Retriever
 from opennovel.core.safety_fence import SafetyFence
 from opennovel.core.state_manager import StateManager
@@ -372,6 +376,18 @@ class AutoRunner:
 
         # 条件管线：延后批处理的 Manager 更新队列
         self._deferred_manager_updates: list[DeferredManagerData] = []
+
+        # ADR 0011: 弹性资源调度器
+        self.priority_scheduler = PriorityScheduler()
+
+        # ADR 0011: 延迟批处理器（FTS5 + Metrics + Vector 批量写入）
+        self.lazy_batch = LazyBatchProcessor()
+
+        # ADR 0012: 在线守护进程（每章后自动健康检查）
+        self.guardian = GuardianDaemon(project_root, auto_fix_enabled=True)
+
+        # ADR 0012: 故障分析器（异常时自动诊断）
+        self.fault_analyzer = FaultAnalyzer(project_root)
 
     def _build_or_load_indexes(self, retriever: Retriever) -> None:
         """构建或加载向量索引（canon + subconscious）。
@@ -917,6 +933,19 @@ class AutoRunner:
         active_chars = self._get_active_characters()
         chapter_type = detect_chapter_type(chapter_hint)
 
+        # ADR 0011: 弹性资源调度 — 根据章节类型和叙事张力分配 Token/模型资源
+        resource_budget = self.priority_scheduler.allocate(
+            chapter_type,
+            tension_trend=getattr(self, "_tension_trend", 0.0),
+            recent_avg_score=getattr(self, "_recent_avg_score", None),
+        )
+        self._log(
+            f"资源调度: {chapter_type.value} → {resource_budget.tier.value} "
+            f"(Token ×{resource_budget.token_multiplier}, "
+            f"premium={resource_budget.use_premium_model})",
+            "debug",
+        )
+
         # Step 4-5: 条件管线分支
         # 条件跳转（Conditional Jump）— ADR 0006:
         #   评分 >= 90 → 跳过 Manager 实时更新，延后批处理
@@ -1036,6 +1065,33 @@ class AutoRunner:
         else:
             self._log("一致性校验通过", "success")
 
+        # ADR 0012: 章节完成后自动健康检查
+        try:
+            guard_report = self.guardian.check_after_chapter(chapter_id, auto_fix=True)
+            if guard_report.findings:
+                self._log(
+                    f"Guardian: {len(guard_report.findings)} 项发现, "
+                    f"{guard_report.auto_fixed} 已自动修复",
+                    "warning" if guard_report.needs_attention > 0 else "debug",
+                )
+        except Exception as e:
+            logger.debug("Guardian 检查跳过: %s", e)
+
+        # ADR 0011: 章末批量刷写延迟操作
+        if not self.lazy_batch.is_empty:
+            try:
+                from opennovel.storage.fts5 import Fts5Store
+                fts5_db = self.project_root / ".novel.fts5.db"
+                fts5_store = Fts5Store(self.project_root, fts5_db) if fts5_db.exists() else None
+                self.lazy_batch.flush(
+                    fts5_store=fts5_store,
+                    metrics_store=self.metrics,
+                )
+                if fts5_store:
+                    fts5_store.close()
+            except Exception as e:
+                logger.debug("延迟批处理跳过: %s", e)
+
         return ChapterResult(
             chapter_id=chapter_id,
             outline=outline,
@@ -1154,15 +1210,48 @@ class AutoRunner:
             except Exception as e:
                 self._log(f"章节 {chapter_id} 创作失败: {e}", "error")
                 report.failed_chapters += 1
+                # ADR 0012: 故障自动诊断
+                try:
+                    fault_report = self.fault_analyzer.analyze(
+                        chapter_id, "run_chapter", e,
+                    )
+                    if fault_report.causes:
+                        top_cause = fault_report.causes[0]
+                        self._log(
+                            f"故障诊断: {top_cause.fault_type.value} "
+                            f"(概率 {top_cause.probability:.0%})",
+                            "warning",
+                        )
+                    for action in fault_report.recovery_actions[:2]:
+                        self._log(f"  恢复建议: [{action.risk}] {action.description}", "info")
+                except Exception:
+                    pass
 
         # ── 批处理延后的 Manager 更新 ──
         if self._deferred_manager_updates:
             self._process_deferred_manager_updates(results)
 
+        # ADR 0011: 最终批量刷写所有延迟操作
+        if not self.lazy_batch.is_empty:
+            try:
+                from opennovel.storage.fts5 import Fts5Store
+                fts5_db = self.project_root / ".novel.fts5.db"
+                fts5_store = Fts5Store(self.project_root, fts5_db) if fts5_db.exists() else None
+                stats = self.lazy_batch.flush(
+                    fts5_store=fts5_store,
+                    metrics_store=self.metrics,
+                )
+                if fts5_store:
+                    fts5_store.close()
+                if stats:
+                    self._log(f"延迟批处理: {sum(stats.values())} 个操作完成", "debug")
+            except Exception as e:
+                logger.debug("最终延迟批处理跳过: %s", e)
+
         # 写入最终时间线
         try:
             write_timeline(self.project_root)
-            self._log(f"时间线已写入: timeline/events.md", "info")
+            self._log("时间线已写入: timeline/events.md", "info")
         except Exception as e:
             self._log(f"时间线写入失败（不影响报告）: {e}", "warning")
 
