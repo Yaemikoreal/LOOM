@@ -477,6 +477,7 @@ class AutoRunner:
             retriever=retriever,
             event_store=event_store,
             storage=self.storage,
+            metrics_store=self.metrics,
         )
 
         self.writer = Writer(
@@ -746,12 +747,7 @@ class AutoRunner:
             elif proposal.action == SchedulingAction.INSERT:
                 result = self._apply_insert_proposal(result, proposal, current_index)
             elif proposal.action == SchedulingAction.MERGE:
-                self._log(
-                    f"调度提议: 合并 {proposal.target_chapter_id} ↔ {proposal.merge_with} "
-                    f"— {proposal.rationale}",
-                    "info",
-                )
-                # MERGE 暂未实现，仅记录日志
+                result = self._apply_merge_proposal(result, proposal)
             else:
                 self._log(f"未知调度动作: {proposal.action}", "warning")
 
@@ -825,6 +821,62 @@ class AutoRunner:
             "success",
         )
         return chapters[:idx] + [(new_id, proposal.new_chapter_hint)] + chapters[idx:]
+
+    def _apply_merge_proposal(
+        self,
+        chapters: list[tuple[str, str]],
+        proposal: SchedulingProposal,
+    ) -> list[tuple[str, str]]:
+        """执行 MERGE 调度：将目标章节合并到 merge_with 章节。
+
+        合并规则：
+        1. 找到 target_chapter_id 和 merge_with 在列表中的位置
+        2. 将 target 的 hint 合并到 merge_with 的 hint（用 "；" 分隔）
+        3. 从列表中移除 target，保留 merge_with
+
+        Args:
+            chapters: 当前章节列表
+            proposal: 调度提议（需同时设置 target_chapter_id 和 merge_with）
+
+        Returns:
+            合并后的章节列表
+        """
+        target = proposal.target_chapter_id
+        merge_target = proposal.merge_with
+
+        if not merge_target:
+            self._log("调度合并失败: merge_with 未指定", "warning")
+            return chapters
+
+        target_idx = next(
+            (i for i, (cid, _) in enumerate(chapters) if cid == target), -1
+        )
+        merge_idx = next(
+            (i for i, (cid, _) in enumerate(chapters) if cid == merge_target), -1
+        )
+
+        if target_idx == -1:
+            self._log(f"调度合并失败: 未找到源章节 {target}", "warning")
+            return chapters
+        if merge_idx == -1:
+            self._log(f"调度合并失败: 未找到目标章节 {merge_target}", "warning")
+            return chapters
+
+        # 合并两个章节的提示
+        _, target_hint = chapters[target_idx]
+        merge_cid, merge_hint = chapters[merge_idx]
+        combined_hint = f"{merge_hint}；{target_hint}" if merge_hint else target_hint
+
+        chapters[merge_idx] = (merge_cid, combined_hint)
+
+        # 移除被合并的章节
+        result = chapters[:target_idx] + chapters[target_idx + 1 :]
+
+        self._log(
+            f"调度执行: 合并 {target} → {merge_target} — {proposal.rationale}",
+            "success",
+        )
+        return result
 
     def _parse_outline(self, outline_text: str) -> list[tuple[str, str]]:
         """解析大纲文本，返回 [(chapter_id, chapter_hint), ...] 列表。"""

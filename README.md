@@ -290,9 +290,12 @@ novel <command> --help  # Command-specific help
 | `novel diff <file>` | Validate consistency between chapter text and shadow state. |
 | `novel doctor <path>` | Diagnose project health: orphan characters, dangling references, dirty flags. |
 | `novel reindex <path>` | Rebuild search indexes (FTS5 + vector). |
-| `novel list` | List all projects in workspace with model, chapter count, word count. |
+| `novel list-projects` | List all projects in workspace with model, chapter count, word count. |
 | `novel config` | View or modify global configuration (default model, workspace directory). |
-| `novel foreshadow` | View or manage foreshadowing tracking table. `--add` for manual entries.
+| `novel foreshadow` | View or manage foreshadowing tracking table. `--add` for manual entries. |
+| `novel causal` | Query event causal chains (`--event <id>`). |
+| `novel report` | Generate project reports (`--cost` for token usage and cost estimation). |
+| `novel snapshot` | Snapshot management (`cleanup` for archival of expired snapshots). |
 
 ---
 
@@ -385,8 +388,8 @@ Agent-level (agents.writer.model)
 ├── subconscious/        # Inspiration fragments (SUBCONSCIOUS layer)
 ├── .snapshots/          # File-level incremental snapshots
 ├── .index/              # Vector index persistence
-├── .novel.db            # SQLite event ledger (narrative truth)
-├── .novel.metrics.db    # SQLite metrics database (runtime telemetry)
+├── .novel.db            # SQLite database (narrative truth + runtime telemetry + state cache)
+├── .novel.fts5.db       # SQLite FTS5 full-text search index (rebuildable)
 ├── debug/prompts/       # Optional LLM prompt logs
 └── novel.yaml           # Project configuration
 ```
@@ -401,7 +404,10 @@ opennovel/
 │   ├── auto.py           # Autonomous pipeline (Gen2)
 │   ├── commit.py         # Five-step review workflow
 │   ├── stash.py          # Inspiration management
-│   └── reindex.py        # Search index rebuild (FTS5 + vector)
+│   ├── reindex.py        # Search index rebuild (FTS5 + vector)
+│   ├── causal.py         # Causal chain query
+│   └── report.py         # Project run report
+├── core/                 # Core engine
 │   ├── llm.py            # LiteLLM bus + tenacity retry + token tracking
 │   ├── auto_runner.py    # Autonomous four-agent orchestrator
 │   ├── context_assembler.py  # Context assembly + token budgeting
@@ -416,11 +422,17 @@ opennovel/
 │   ├── safety_fence.py   # Recursion/token/timeout/canon constraints
 │   ├── tool_registry.py  # Knowledge query dispatch center
 │   ├── mutation_strategy.py  # Mutation dimension selection
-│   ├── global_config.py  # .opennovel.yaml loader
-│   ├── state_manager.py  # Snapshot + rollback + diff
-│   ├── config.py         # novel.yaml management
-│   ├── doctor.py         # Project health diagnosis
-│   └── diff_checker.py   # Text-shadow consistency check
+│   ├── state_projector.py    # Event stream → character state snapshots
+│   ├── chapter_utils.py      # Chapter type detection (CLIMAX/TRANSITION/ROUTINE)
+│   ├── evaluation_auditor.py # Critic scoring consistency & bias analysis
+│   ├── canon_auditor.py      # LLM-based canon secondary semantic audit
+│   ├── llm_cache.py          # LLM input cache (SQLite + LRU)
+│   ├── async_runner.py       # Async generator wrapper for AutoRunner
+│   ├── global_config.py      # .opennovel.yaml loader
+│   ├── state_manager.py      # Snapshot + rollback + diff
+│   ├── config.py             # novel.yaml management
+│   ├── doctor.py             # Project health diagnosis
+│   └── diff_checker.py       # Text-shadow consistency check
 ├── agents/               # Agent personalities
 │   ├── writer.py         # Planning + creation + revision + mutation
 │   ├── critic.py         # Five-dimension scoring + anchored feedback
@@ -473,7 +485,7 @@ mypy --strict opennovel/
 
 ### Test Status
 
-- **850+ tests** across 41 test files
+- **850+ tests** across 46 test files, 970+ test cases
 - **88% code coverage**
 - Modules at or near 100% coverage: parser, state_manager, diff_checker, doctor, schemas, yaml_storage, metrics, foreshadowing
 

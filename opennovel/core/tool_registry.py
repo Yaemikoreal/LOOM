@@ -38,6 +38,7 @@ class ToolRegistry:
         event_store: Any | None = None,
         storage: Any | None = None,
         search_pipeline: Any | None = None,
+        metrics_store: Any | None = None,
     ) -> None:
         """初始化工具注册中心。
 
@@ -48,12 +49,14 @@ class ToolRegistry:
             storage: YAML 存储实例（用于 character 查询）
             search_pipeline: SearchPipeline 实例（ADR 0007 三通道管道），
                              提供时不使用旧 retriever 路径
+            metrics_store: MetricsStore 实例（ADR 0010 审计日志）
         """
         self.project_root = project_root
         self._retriever = retriever
         self._event_store = event_store
         self._storage = storage
         self._search_pipeline = search_pipeline
+        self._metrics_store = metrics_store
         self._tools: dict[KnowledgeSource, ToolHandler] = {
             KnowledgeSource.CANON: self._query_canon,
             KnowledgeSource.SUBCONSCIOUS: self._query_subconscious,
@@ -70,11 +73,13 @@ class ToolRegistry:
         safety_fence: Any | None = None,
         agent: str = "",
     ) -> KnowledgeResult:
-        """带权限检查和重试降级的工具调用入口（Phase 3 治理入口）。
+        """带权限检查、重试降级和审计日志的工具调用入口（Phase 3 治理入口）。
 
-        优先使用此方法而非直接 fulfill()，因为：
-        1. 权限检查：Agent 越权调用时返回拒绝结果
-        2. 重试降级：单次调用失败自动重试，三次失败降级返回
+        ADR 0010 治理模型四个支柱：
+        1. 权限门控：Agent 越权调用时返回拒绝结果
+        2. 层级化重试：单次调用失败自动重试（指数退避），全部失败降级
+        3. 审计日志：finally 块写入 MetricsStore，事后可追溯
+        4. 跨组件联动：AutoRunner 编排器显式调用
 
         Args:
             need: 单个知识需求
@@ -84,34 +89,86 @@ class ToolRegistry:
         Returns:
             查询结果（权限拒绝或查询失败时返回 relevance=0.0 的降级结果）
         """
-        # 权限检查
-        if safety_fence and agent:
-            tool_name = self._need_to_tool_name(need)
-            if not safety_fence.check_tool_permission(agent, tool_name):
+        start_time = time.perf_counter()
+        tool_name = self._need_to_tool_name(need)
+        status = "success"
+        detail = ""
+        result: KnowledgeResult | None = None
+
+        try:
+            # 权限检查
+            if (
+                safety_fence
+                and agent
+                and not safety_fence.check_tool_permission(agent, tool_name)
+            ):
                 logger.warning(
                     "Agent '%s' 无权调用工具 '%s'，已拒绝",
                     agent,
                     tool_name,
                 )
-                return KnowledgeResult(
-                    content=f"[权限拒绝] Agent '{agent}' 无权限调用 '{tool_name}'",
+                status = "denied"
+                detail = f"Agent '{agent}' 无权限调用 '{tool_name}'"
+                result = KnowledgeResult(
+                    content=f"[权限拒绝] {detail}",
                     source=need.source,
                     concept=need.concept,
                     relevance=0.0,
                 )
+                return result
 
-        # 查找 handler
-        handler = self._tools.get(need.source)
-        if handler is None:
-            return KnowledgeResult(
-                content="",
+            # 查找 handler
+            handler = self._tools.get(need.source)
+            if handler is None:
+                status = "error"
+                detail = f"未知数据源: {need.source.value}"
+                result = KnowledgeResult(
+                    content="",
+                    source=need.source,
+                    concept=need.concept,
+                    relevance=0.0,
+                )
+                return result
+
+            # 带重试的执行
+            result = self._execute_with_retry(need, handler)
+            # 检测是否为降级结果（检索失败）
+            if result.content.startswith("[检索失败"):
+                status = "error"
+                detail = result.content
+            return result
+
+        except Exception as e:
+            status = "error"
+            detail = str(e)[:500]
+            logger.error("工具调用异常: tool=%s, agent=%s, error=%s", tool_name, agent, e)
+            result = KnowledgeResult(
+                content=f"[工具执行异常: {detail}]",
                 source=need.source,
                 concept=need.concept,
                 relevance=0.0,
             )
+            return result
 
-        # 带重试的执行
-        return self._execute_with_retry(need, handler)
+        finally:
+            # ADR 0010 Phase 3：审计日志 — finally 块中直接写入
+            if self._metrics_store is not None:
+                try:
+                    elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+                    self._metrics_store.record_audit_log(
+                        agent=agent or "unknown",
+                        tool_name=tool_name,
+                        source=need.source.value,
+                        concept=need.concept[:200],
+                        status=status,
+                        duration_ms=elapsed_ms,
+                        detail=detail[:500] if detail else (
+                            f"relevance={result.relevance:.2f}" if result else ""
+                        ),
+                    )
+                except Exception as audit_err:
+                    # 审计日志写入失败不应影响主流程
+                    logger.debug("审计日志写入失败（非阻断）: %s", audit_err)
 
     def fulfill(
         self,

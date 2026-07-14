@@ -81,6 +81,29 @@ class AgentTrace(SQLModel, table=True):
     detail: str = SQLField(default="", description="补充信息（如错误消息）")
 
 
+class AuditLog(SQLModel, table=True):
+    """工具调用审计日志 — ADR 0010 治理基础设施。
+
+    记录每次 ToolRegistry.execute() 的调用详情，
+    用于事后审计 Agent 自治行为。
+    """
+
+    __tablename__ = "audit_log"
+
+    id: int | None = SQLField(default=None, primary_key=True)
+    timestamp: str = SQLField(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="记录时间",
+    )
+    agent: str = SQLField(default="", description="发起调用的 Agent 名称")
+    tool_name: str = SQLField(default="", description="工具名称")
+    source: str = SQLField(default="", description="数据源 (KnowledgeSource)")
+    concept: str = SQLField(default="", description="查询概念")
+    status: str = SQLField(default="success", description="执行状态: success/denied/error")
+    duration_ms: int = SQLField(default=0, description="执行耗时（毫秒）")
+    detail: str = SQLField(default="", description="补充信息（错误消息或权限拒绝原因）")
+
+
 class StateCacheEntry(SQLModel, table=True):
     """State Projector 缓存条目 — EventLog 折叠后的角色状态快照。
 

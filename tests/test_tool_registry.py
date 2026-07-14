@@ -1,5 +1,7 @@
 """ToolRegistry 工具注册中心测试。"""
 
+from __future__ import annotations
+
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -7,6 +9,7 @@ import pytest
 
 from opennovel.core.tool_registry import ToolRegistry
 from opennovel.schemas.knowledge import KnowledgeNeed, KnowledgeResult, KnowledgeSource
+from opennovel.storage.metrics import MetricsStore
 
 
 @pytest.fixture
@@ -325,3 +328,149 @@ class TestToolRegistryRetry:
 
         assert result == success_result
         assert handler.call_count == 2
+
+
+class TestToolRegistryAuditLog:
+    """ToolRegistry 审计日志测试 (ADR 0010 Phase 3)。"""
+
+    @pytest.fixture
+    def metrics_store_with_audit(self, tmp_path: Path) -> MetricsStore:
+        """创建带审计日志表的 MetricsStore。"""
+        from opennovel.storage.metrics import MetricsStore
+
+        db_path = tmp_path / "test_audit.db"
+        return MetricsStore(db_path)
+
+    def test_audit_log_table_created(
+        self, metrics_store_with_audit: MetricsStore
+    ) -> None:
+        """验证 AuditLog 表在 MetricsStore 初始化时自动创建。"""
+        from sqlmodel import Session, select
+
+        from opennovel.schemas.metrics import AuditLog
+
+        with Session(metrics_store_with_audit._engine) as session:
+            result = session.exec(select(AuditLog)).all()
+            # 空表但结构存在，不抛异常即验证通过
+            assert result == []
+
+    def test_record_and_read_audit_log(
+        self, metrics_store_with_audit: MetricsStore
+    ) -> None:
+        """写入审计日志后能查询到。"""
+        entry = metrics_store_with_audit.record_audit_log(
+            agent="writer",
+            tool_name="query_canon",
+            source="canon",
+            concept="魔法规则",
+            status="success",
+            duration_ms=42,
+            detail="relevance=0.85",
+        )
+        assert entry.id is not None
+        assert entry.agent == "writer"
+
+        logs = metrics_store_with_audit.get_audit_logs(agent="writer")
+        assert len(logs) == 1
+        assert logs[0].tool_name == "query_canon"
+        assert logs[0].status == "success"
+
+    def test_audit_log_filter_by_status(
+        self, metrics_store_with_audit: MetricsStore
+    ) -> None:
+        """按状态过滤审计日志。"""
+        metrics_store_with_audit.record_audit_log(
+            agent="writer", tool_name="t1", status="success"
+        )
+        metrics_store_with_audit.record_audit_log(
+            agent="critic", tool_name="t2", status="denied"
+        )
+        metrics_store_with_audit.record_audit_log(
+            agent="writer", tool_name="t3", status="error"
+        )
+
+        denied = metrics_store_with_audit.get_audit_logs(status="denied")
+        assert len(denied) == 1
+        assert denied[0].agent == "critic"
+
+        errors = metrics_store_with_audit.get_audit_logs(status="error")
+        assert len(errors) == 1
+
+    def test_tool_registry_execute_writes_audit_log(
+        self, project_root: Path, tmp_path: Path
+    ) -> None:
+        """ToolRegistry.execute() 自动写入审计日志（权限拒绝场景）。"""
+        from opennovel.core.safety_fence import SafetyFence, SafetyFenceConfig
+        from opennovel.storage.metrics import MetricsStore
+
+        db_path = tmp_path / "test_tool_audit.db"
+        metrics = MetricsStore(db_path)
+
+        registry = ToolRegistry(
+            project_root=project_root,
+            metrics_store=metrics,
+        )
+
+        # 配置安全围栏：writer 禁止调用 query_event，白名单只允许 query_canon
+        config = SafetyFenceConfig(
+            enabled=True,
+            tool_permissions={
+                "writer": {
+                    "allowed": ["query_canon"],
+                    "disallowed": ["query_event"],
+                }
+            },
+        )
+        fence = SafetyFence(config)
+
+        # 场景 1：writer 调用 query_event 应被拒绝
+        need = KnowledgeNeed(concept="受伤事件", source=KnowledgeSource.EVENT)
+        result = registry.execute(need, safety_fence=fence, agent="writer")
+
+        assert "权限拒绝" in result.content
+        assert result.relevance == 0.0
+
+        # 场景 2：审计日志应记录被拒绝的调用
+        denied_logs = metrics.get_audit_logs(status="denied")
+        assert len(denied_logs) == 1
+        assert denied_logs[0].agent == "writer"
+        assert denied_logs[0].tool_name == "query_event"
+
+    def test_tool_registry_execute_audit_success(
+        self, project_root: Path, tmp_path: Path, mock_retriever: MagicMock
+    ) -> None:
+        """ToolRegistry.execute() 成功调用也写入审计日志。"""
+        from opennovel.storage.metrics import MetricsStore
+
+        db_path = tmp_path / "test_tool_audit_success.db"
+        metrics = MetricsStore(db_path)
+
+        registry = ToolRegistry(
+            project_root=project_root,
+            retriever=mock_retriever,
+            metrics_store=metrics,
+        )
+
+        need = KnowledgeNeed(concept="魔法", source=KnowledgeSource.CANON)
+        result = registry.execute(need, agent="writer")
+
+        assert result is not None
+        assert "魔法消耗寿命" in result.content
+
+        # 审计日志应记录成功的调用
+        success_logs = metrics.get_audit_logs(status="success")
+        assert len(success_logs) == 1
+        assert success_logs[0].agent == "writer"
+        assert success_logs[0].tool_name == "query_canon"
+        assert success_logs[0].duration_ms >= 0  # mock 调用很快，可能为 0
+
+    def test_tool_registry_execute_audit_without_metrics(
+        self, project_root: Path,
+    ) -> None:
+        """没有 metrics_store 时 execute() 不抛异常（后退兼容）。"""
+        registry = ToolRegistry(project_root=project_root)  # metrics_store=None
+        need = KnowledgeNeed(concept="魔法", source=KnowledgeSource.CANON)
+
+        # 不传 metrics_store 时不应崩溃
+        result = registry.execute(need)
+        assert result is not None

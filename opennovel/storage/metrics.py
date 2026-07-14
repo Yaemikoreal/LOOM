@@ -21,7 +21,13 @@ from typing import Any
 
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from opennovel.schemas.metrics import AgentTrace, EvaluationHistory, StateCacheEntry, TokenUsage
+from opennovel.schemas.metrics import (
+    AgentTrace,
+    AuditLog,
+    EvaluationHistory,
+    StateCacheEntry,
+    TokenUsage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -473,6 +479,81 @@ class MetricsStore:
             if existing:
                 session.delete(existing)
                 session.commit()
+
+    # ── 审计日志 (ADR 0010 Phase 3 治理基础设施) ──────────────────────────
+
+    def record_audit_log(
+        self,
+        agent: str = "",
+        tool_name: str = "",
+        source: str = "",
+        concept: str = "",
+        status: str = "success",
+        duration_ms: int = 0,
+        detail: str = "",
+    ) -> AuditLog:
+        """记录工具调用审计日志。
+
+        ADR 0010 治理模型要求：ToolRegistry.execute() 的 finally 块写入审计日志，
+        用于事后追溯 Agent 自治行为。
+
+        Args:
+            agent: 发起调用的 Agent 名称
+            tool_name: 工具名称
+            source: 数据源 (KnowledgeSource 值)
+            concept: 查询概念
+            status: 执行状态 (success/denied/error)
+            duration_ms: 执行耗时（毫秒）
+            detail: 补充信息
+
+        Returns:
+            写入的 AuditLog 记录
+        """
+        entry = AuditLog(
+            agent=agent,
+            tool_name=tool_name,
+            source=source,
+            concept=concept,
+            status=status,
+            duration_ms=duration_ms,
+            detail=detail,
+        )
+        with Session(self._engine) as session:
+            session.add(entry)
+            session.commit()
+            session.refresh(entry)
+            # 脱离 session 以便调用方安全读取属性
+            session.expunge(entry)
+        return entry
+
+    def get_audit_logs(
+        self,
+        agent: str | None = None,
+        tool_name: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditLog]:
+        """查询审计日志。
+
+        Args:
+            agent: 按 Agent 过滤（可选）
+            tool_name: 按工具名过滤（可选）
+            status: 按状态过滤（可选）
+            limit: 返回条数上限
+
+        Returns:
+            审计日志列表
+        """
+        with Session(self._engine) as session:
+            statement = select(AuditLog)
+            if agent:
+                statement = statement.where(AuditLog.agent == agent)
+            if tool_name:
+                statement = statement.where(AuditLog.tool_name == tool_name)
+            if status:
+                statement = statement.where(AuditLog.status == status)
+            statement = statement.order_by(AuditLog.id.desc()).limit(limit)
+            return list(session.exec(statement).all())
 
     def get_cost_report(
         self,

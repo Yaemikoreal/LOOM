@@ -1783,6 +1783,133 @@ class TestSchedulingProposals:
         assert result == chapters
         assert len(result) == 2
 
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_apply_merge_proposal(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+        default_config: LoomConfig,
+    ) -> None:
+        """测试 _apply_merge_proposal 合并两个章节的提示。"""
+        from opennovel.schemas.director import SchedulingAction, SchedulingProposal
+
+        runner = AutoRunner(project_root=empty_project_root, config=default_config)
+        chapters = [
+            ("ch_001", "开篇"),
+            ("ch_002", "过渡"),
+            ("ch_003", "高潮"),
+        ]
+
+        # 合并 ch_002 到 ch_001
+        proposal = SchedulingProposal(
+            action=SchedulingAction.MERGE,
+            target_chapter_id="ch_002",
+            merge_with="ch_001",
+            rationale="内容稀疏，合并到前一章",
+        )
+        result = runner._apply_merge_proposal(chapters, proposal)
+
+        assert len(result) == 2
+        assert result[0][0] == "ch_001"
+        assert "开篇" in result[0][1]
+        assert "过渡" in result[0][1]
+        assert result[1][0] == "ch_003"
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_apply_merge_proposal_target_not_found(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+        default_config: LoomConfig,
+    ) -> None:
+        """测试 _apply_merge_proposal 源章节不存在时不改动。"""
+        from opennovel.schemas.director import SchedulingAction, SchedulingProposal
+
+        runner = AutoRunner(project_root=empty_project_root, config=default_config)
+        chapters = [("ch_001", "1"), ("ch_002", "2")]
+
+        proposal = SchedulingProposal(
+            action=SchedulingAction.MERGE,
+            target_chapter_id="ch_999",
+            merge_with="ch_001",
+            rationale="不存在的源章节",
+        )
+        result = runner._apply_merge_proposal(chapters, proposal)
+        assert len(result) == 2
+        assert result == chapters
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_apply_merge_proposal_no_merge_with(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+        default_config: LoomConfig,
+    ) -> None:
+        """测试 _apply_merge_proposal 未指定 merge_with 时不改动。"""
+        from opennovel.schemas.director import SchedulingAction, SchedulingProposal
+
+        runner = AutoRunner(project_root=empty_project_root, config=default_config)
+        chapters = [("ch_001", "1"), ("ch_002", "2")]
+
+        proposal = SchedulingProposal(
+            action=SchedulingAction.MERGE,
+            target_chapter_id="ch_001",
+            merge_with="",  # 空字符串
+            rationale="缺 merge_with",
+        )
+        result = runner._apply_merge_proposal(chapters, proposal)
+        assert result == chapters
+
+    @patch("opennovel.core.auto_runner.LLMBus")
+    @patch("opennovel.core.auto_runner.Retriever")
+    @patch("opennovel.core.auto_runner.StateManager")
+    def test_apply_scheduling_with_merge(
+        self,
+        mock_sm_cls: MagicMock,
+        mock_retriever_cls: MagicMock,
+        mock_llm_bus_cls: MagicMock,
+        empty_project_root: Path,
+        default_config: LoomConfig,
+    ) -> None:
+        """测试 _apply_scheduling_proposals 集成处理 MERGE 提议。"""
+        from opennovel.schemas.director import SchedulingAction, SchedulingProposal
+
+        runner = AutoRunner(project_root=empty_project_root, config=default_config)
+        chapters = [
+            ("ch_001", "开篇"),
+            ("ch_002", "过渡"),
+            ("ch_003", "对峙"),
+            ("ch_004", "高潮"),
+        ]
+
+        proposals = [
+            SchedulingProposal(
+                action=SchedulingAction.MERGE,
+                target_chapter_id="ch_002",
+                merge_with="ch_001",
+                rationale="过渡章节太短",
+            ),
+        ]
+        result = runner._apply_scheduling_proposals(chapters, proposals, current_index=0)
+
+        assert len(result) == 3
+        assert result[0][0] == "ch_001"
+        assert "开篇" in result[0][1] and "过渡" in result[0][1]
+        assert result[1][0] == "ch_003"
+        assert result[2][0] == "ch_004"
+
 
 # ── 知识缺口检测集成测试 ──
 
