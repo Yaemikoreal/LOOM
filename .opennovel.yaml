@@ -1,0 +1,4 @@
+# OpenNovel 全局配置
+# 三层模型路由：novel.yaml > .opennovel.yaml > 硬编码
+workspace_dir: "novels"
+default_model: "deepseek/deepseek-v4-flash"

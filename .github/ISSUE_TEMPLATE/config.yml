@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 文档
+    url: https://github.com/Yaemikoreal/OpenNovel#readme
+    about: 使用前请先阅读文档
+  - name: 💬 讨论区
+    url: https://github.com/Yaemikoreal/OpenNovel/discussions
+    about: 提问和讨论请使用 Discussions

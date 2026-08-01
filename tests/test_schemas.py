@@ -3,12 +3,12 @@
 import pytest
 from pydantic import ValidationError
 
-from loom.schemas.character import (
+from opennovel.schemas.character import (
     CharacterFrontmatter,
     EmotionVector,
     PhysicalState,
 )
-from loom.schemas.event import EventCreate, EventLog, EventType, SnapshotMeta
+from opennovel.schemas.event import EventCreate, EventLog, EventLogBase, EventType, SnapshotMeta
 
 
 class TestEventLog:
@@ -79,9 +79,15 @@ class TestEventCreate:
     def test_event_type_enum(self) -> None:
         """测试事件类型枚举完整性。"""
         expected_types = {
-            "INJURY", "HEAL", "ITEM_GAIN", "ITEM_LOSS",
-            "KNOWLEDGE", "LOCATION_CHANGE", "EMOTION_SHIFT",
-            "RELATIONSHIP_CHANGE", "CUSTOM",
+            "INJURY",
+            "HEAL",
+            "ITEM_GAIN",
+            "ITEM_LOSS",
+            "KNOWLEDGE",
+            "LOCATION_CHANGE",
+            "EMOTION_SHIFT",
+            "RELATIONSHIP_CHANGE",
+            "CUSTOM",
         }
         actual_types = {e.value for e in EventType}
         assert actual_types == expected_types
@@ -175,3 +181,47 @@ class TestSnapshotMeta:
         )
         assert snapshot.delta_files == {}
         assert snapshot.delta_sqlite == {"event_ids_to_rollback": []}
+
+
+class TestEventLogBaseValidators:
+    """EventLogBase field_validator 测试（直接调用类方法以覆盖 SQLModel 桩代码路径）。"""
+
+    def test_validate_causal_pressure_negative(self) -> None:
+        """测试因果压强负值触发 ValueError（覆盖 lines 52-53）。"""
+        with pytest.raises(ValueError, match="causal_pressure 必须在"):
+            EventLogBase.validate_causal_pressure(-0.1)
+
+    def test_validate_causal_pressure_above_one(self) -> None:
+        """测试因果压强超上限触发 ValueError。"""
+        with pytest.raises(ValueError, match="causal_pressure 必须在"):
+            EventLogBase.validate_causal_pressure(1.5)
+
+    def test_validate_causal_pressure_valid_rounding(self) -> None:
+        """测试因果压强合法值正确四舍五入（覆盖 line 54）。"""
+        result = EventLogBase.validate_causal_pressure(0.555)
+        assert result == 0.56  # round(0.555, 2) = 0.56
+
+    def test_validate_causal_pressure_boundary_zero(self) -> None:
+        """测试因果压强下边界值 0.0 合法。"""
+        result = EventLogBase.validate_causal_pressure(0.0)
+        assert result == 0.0
+
+    def test_validate_causal_pressure_boundary_one(self) -> None:
+        """测试因果压强上边界值 1.0 合法。"""
+        result = EventLogBase.validate_causal_pressure(1.0)
+        assert result == 1.0
+
+    def test_validate_character_id_invalid_prefix(self) -> None:
+        """测试角色 ID 前缀不合法触发 ValueError（覆盖 lines 60-61）。"""
+        with pytest.raises(ValueError, match="character_id 必须使用 Canonical ID 规范"):
+            EventLogBase.validate_character_id("role_001")
+
+    def test_validate_character_id_empty_string(self) -> None:
+        """测试空字符串角色 ID 触发 ValueError。"""
+        with pytest.raises(ValueError, match="character_id 必须使用 Canonical ID 规范"):
+            EventLogBase.validate_character_id("")
+
+    def test_validate_character_id_valid(self) -> None:
+        """测试合法角色 ID 正常通过（覆盖 line 62）。"""
+        result = EventLogBase.validate_character_id("char_001")
+        assert result == "char_001"

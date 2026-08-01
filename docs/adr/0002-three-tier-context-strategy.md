@@ -24,5 +24,5 @@
 
 - `LLMBus` 需要 LiteLLM `get_model_info()` 支持（备选：人工映射表）
 - `context_assembler.py` 需要重构为策略路由模式
-- 全景模式下 `loom write` 的延迟和成本需在实际使用中调优 128K 软限
+- 全景模式下 `novel write` 的延迟和成本需在实际使用中调优 128K 软限
 - 全景模式下 `canon/` 和 `subconscious/` 的 MD 文件大小不宜过大（建议单文件 < 16K）

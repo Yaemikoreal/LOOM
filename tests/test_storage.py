@@ -1,10 +1,11 @@
 """storage 模块测试 - SQLite 事件账本。"""
 
-import pytest
 from pathlib import Path
 
-from loom.schemas.event import EventCreate, EventType
-from loom.storage.sqlite import EventStore
+import pytest
+
+from opennovel.schemas.event import EventCreate, EventType
+from opennovel.storage.sqlite import EventStore
 
 
 @pytest.fixture
@@ -40,13 +41,17 @@ class TestEventStore:
         assert fetched is not None
         assert fetched.description == "左臂被巨剑斩伤"
 
-    def test_get_events_by_chapter(self, event_store: EventStore, sample_event: EventCreate) -> None:
+    def test_get_events_by_chapter(
+        self, event_store: EventStore, sample_event: EventCreate
+    ) -> None:
         """测试按章节查询事件。"""
         event_store.add_event(sample_event)
         events = event_store.get_events_by_chapter("ch_001")
         assert len(events) == 1
 
-    def test_get_events_by_character(self, event_store: EventStore, sample_event: EventCreate) -> None:
+    def test_get_events_by_character(
+        self, event_store: EventStore, sample_event: EventCreate
+    ) -> None:
         """测试按角色查询事件。"""
         event_store.add_event(sample_event)
         events = event_store.get_events_by_character("char_001")

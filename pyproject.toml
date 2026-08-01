@@ -3,25 +3,28 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "loom"
-version = "1.0.1"
-description = "L.O.O.M. (Living Organic Outline Machine) - 本地优先的长篇小说叙事操作系统"
+name = "opennovel"
+version = "2.0.0"
+description = "OpenNovel - 本地优先的长篇小说叙事操作系统，四 Agent 自主创作"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "L.O.O.M. Team"}
+    {name = "OpenNovel Team", email = "yaemikoreal@gmail.com"},
 ]
-keywords = ["novel", "writing", "ai", "narrative", "cli"]
+keywords = ["novel", "writing", "ai", "narrative", "cli", "creative-writing", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Text Processing :: Linguistic",
+    "Topic :: Creative Writing :: Narrative",
     "Typing :: Typed",
 ]
 
@@ -36,8 +39,14 @@ dependencies = [
     "python-frontmatter>=1.0.0",
     "tiktoken>=0.5.0",
     "orjson>=3.9.0",
-    "networkx>=3.1",
+    "mcp>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Yaemikoreal/OpenNovel"
+Repository = "https://github.com/Yaemikoreal/OpenNovel"
+"Bug Tracker" = "https://github.com/Yaemikoreal/OpenNovel/issues"
+"Release Notes" = "https://github.com/Yaemikoreal/OpenNovel/releases"
 
 [project.optional-dependencies]
 dev = [
@@ -45,16 +54,21 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.1.0",
     "mypy>=1.5.0",
+    "pre-commit>=3.5.0",
 ]
 local-embedding = [
     "sentence-transformers>=2.2.0",
 ]
+phase2 = [
+    "networkx>=3.1",
+]
 
 [project.scripts]
-loom = "loom.cli.main:app"
+novel = "opennovel.cli.main:app"
+novel-mcp = "opennovel.mcp_server:cli_main"
 
 [tool.setuptools.packages.find]
-include = ["loom*"]
+include = ["opennovel*"]
 
 [tool.ruff]
 target-version = "py310"
@@ -62,6 +76,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]
+ignore = ["B008"]  # Typer 框架需要函数调用作为默认参数
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

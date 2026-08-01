@@ -1,6 +1,6 @@
 # 0001 — 文件级增量快照替代全局全量 Dump
 
-快照只记录参与 `loom commit` 的文件各自的 `fm_before` 和 `fm_after`，拒绝全局遍历 `characters/` 目录的全量 Dump，也拒绝脆弱的 field_path 级 JSON Patch。
+快照只记录参与 `novel commit` 的文件各自的 `fm_before` 和 `fm_after`，拒绝全局遍历 `characters/` 目录的全量 Dump，也拒绝脆弱的 field_path 级 JSON Patch。
 
 ## 背景
 

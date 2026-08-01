@@ -1,0 +1,9 @@
+version: "1.0.1"
+model: "deepseek/deepseek-v4-flash"
+token_budget: 8000
+output_reserve: 2000
+target_chapters: 3
+words_per_chapter: 2000
+outline: "outlines/story.md"
+creative_direction: "东方奇幻悬疑，慢热日常与神秘主线交织，铁匠铺的烟火气和山谷的宁静氛围"
+director_enabled: true
